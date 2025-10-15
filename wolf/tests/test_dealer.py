@@ -1,6 +1,5 @@
 import unittest
 from core.werewolf_dealer import WerewolfDealer
-
 class TestDealer(unittest.TestCase):
     def setUp(self):
         self.dealer = WerewolfDealer()
