@@ -41,6 +41,7 @@ class WerewolfApp:
         self.dealer = WerewolfDealer()
         # 图片缓存，避免 PhotoImage 被 GC
         self._img_cache = {}
+        self.current_role_pool = None
 
         frm = ttk.Frame(root, padding=12)
         frm.pack(fill=tk.BOTH, expand=True)
@@ -186,31 +187,42 @@ class WerewolfApp:
             self.available_listbox.focus_set()
 
     def deal(self):
-        try:
-            count = int(self.spin.get())
-        except Exception:
-            messagebox.showerror("错误", "请输入有效人数")
-            return
+        if self.current_role_pool:
+            try:
+                res = self.dealer.start_game_with_selection(self.current_role_pool.copy())
+            except Exception as e:
+                messagebox.showerror("发牌失败", str(e))
+                return
 
-        modes = self.dealer.get_available_modes(count)
-        mode = modes[0] if modes else "入门"
+            player_roles = res['player_cards']
+            center = res['center_cards']
+        else:
+            try:
+                count = int(self.spin.get())
+            except Exception:
+                messagebox.showerror("错误", "请输入有效人数")
+                return
 
-        try:
-            player_roles, center = self.dealer.deal(count, mode=mode)
-        except Exception as e:
-            messagebox.showerror("发牌失败", str(e))
-            return
+            modes = self.dealer.get_available_modes(count)
+            mode = modes[0] if modes else "入门"
 
-        # 初始化 dealer.session
-        self.dealer.session = {
-            "player_count": count,
-            "player_cards": player_roles.copy(),
-            "center_cards": center.copy(),
-            "viewed": [False] * count,
-            "turn_index": 0,
-            "action_phase": True,
-            "history": []
-        }
+            try:
+                player_roles, center = self.dealer.deal(count, mode=mode)
+            except Exception as e:
+                messagebox.showerror("发牌失败", str(e))
+                return
+
+            # 初始化 dealer.session
+            self.dealer.session = {
+                "player_count": count,
+                "player_cards": player_roles.copy(),
+                "center_cards": center.copy(),
+                "viewed": [False] * count,
+                "turn_index": 0,
+                "action_phase": True,
+                "history": []
+            }
+            self.current_role_pool = player_roles.copy() + center.copy()
 
         self._last_result = (player_roles, center)
         self.export_btn['state'] = tk.NORMAL
@@ -235,6 +247,7 @@ class WerewolfApp:
             messagebox.showerror("错误", f"当前选择的牌数量为 {len(sel)} 张，应为 {expected} 张。")
             return
         try:
+            self.current_role_pool = sel.copy()
             res = self.dealer.start_game_with_selection(sel)
         except Exception as e:
             messagebox.showerror("开始失败", str(e))
@@ -472,7 +485,7 @@ class WerewolfApp:
 
     # 夜晚可执行的简单操作：查看中央牌、与玩家交换
     def on_all_viewed(self):
-        """当所有玩家完成查看后，布置桌面并进入夜晚阶段。"""
+        """所有玩家查看完毕后，搭建桌面供自由查看与交换。"""
         self._setup_board_area()
 
     def _setup_board_area(self):
