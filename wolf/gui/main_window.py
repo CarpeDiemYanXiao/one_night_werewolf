@@ -42,6 +42,12 @@ class WerewolfApp:
         # 图片缓存，避免 PhotoImage 被 GC
         self._img_cache = {}
 
+        # 背景图相关
+        self._bg_label = None
+        self._bg_img_orig = None
+        self._bg_img_tk = None
+        self._setup_background()
+
         frm = ttk.Frame(root, padding=12)
         frm.pack(fill=tk.BOTH, expand=True)
 
@@ -56,46 +62,25 @@ class WerewolfApp:
         self.spin.configure(command=self._update_selection_summary)
         self.spin.bind("<FocusOut>", lambda e: self._update_selection_summary())
 
-        # 角色选择区：使用多选列表 + 狼人数量输入，守夜人自动两张
+        # 角色选择区：图形化选择（点击图片卡片），狼人使用计数，守夜人自动两张
         self.available_roles = self._load_available_roles()
 
         self.roles_frame = ttk.LabelFrame(frm, text="选择角色（玩家人数 + 3）", padding=6)
         self.roles_frame.pack(fill=tk.BOTH, expand=False, pady=6)
         self.roles_frame_visible = True
 
-        roles_inner = ttk.Frame(self.roles_frame)
-        roles_inner.pack(fill=tk.BOTH, expand=True)
-
-        list_panel = ttk.Frame(roles_inner)
-        list_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        ttk.Label(list_panel, text="可选角色（Ctrl/Shift 多选）").pack(anchor=tk.W)
-        self.available_listbox = tk.Listbox(list_panel, selectmode=tk.MULTIPLE, height=10)
-        for role in self.available_roles:
-            self.available_listbox.insert(tk.END, role["display"])
-        self.available_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb_left = ttk.Scrollbar(list_panel, orient=tk.VERTICAL, command=self.available_listbox.yview)
-        self.available_listbox.config(yscrollcommand=sb_left.set)
-        sb_left.pack(side=tk.RIGHT, fill=tk.Y)
-        self.available_listbox.bind('<<ListboxSelect>>', lambda e: self._update_selection_summary())
-
-        options_panel = ttk.Frame(roles_inner, padding=6)
-        options_panel.pack(side=tk.LEFT, fill=tk.Y)
-        ttk.Label(options_panel, text="狼人数量").pack(anchor=tk.W)
-        self.werewolf_count_var = tk.StringVar(value="2")
-        self.werewolf_spin = ttk.Spinbox(
-            options_panel,
-            from_=0,
-            to=5,
-            width=5,
-            textvariable=self.werewolf_count_var,
-            command=self._update_selection_summary
-        )
-        self.werewolf_spin.pack(anchor=tk.W, pady=(0, 4))
-        self.werewolf_count_var.trace_add('write', lambda *args: self._update_selection_summary())
-        ttk.Label(options_panel, text="提示：选择守夜人时默认两张").pack(anchor=tk.W, pady=(6, 0))
+        # 图形化网格
+        self.roles_grid = ttk.Frame(self.roles_frame)
+        self.roles_grid.pack(fill=tk.BOTH, expand=True)
+        self.role_tiles = {}  # internal -> {selected_var, img_label, frame}
+        self._build_graphical_role_selector()
 
         self.selected_count_var = tk.StringVar(value="已选择 0 张")
         ttk.Label(self.roles_frame, textvariable=self.selected_count_var).pack(anchor=tk.W, pady=(4, 0))
+        ttk.Label(
+            self.roles_frame,
+            text="提示：点击图片切换选中；点击狼人图片循环数量；选择守夜人默认两张"
+        ).pack(anchor=tk.W, pady=(2, 0))
         self._update_selection_summary()
 
         # 开始局（使用玩家选定的角色进行随机发牌）
@@ -142,6 +127,109 @@ class WerewolfApp:
         sorted_roles = sorted(role_dict.items(), key=lambda kv: kv[1])
         return [{"internal": internal, "display": display} for internal, display in sorted_roles]
 
+    def _build_graphical_role_selector(self):
+        """创建基于图片的角色选择网格。狼人用计数，其它角色点击切换选中。"""
+        # 清空旧部件
+        for w in self.roles_grid.winfo_children():
+            w.destroy()
+
+        # 预加载图像
+        def load_img_for(role_name, size=(140, 210)):
+            path = self._find_image_file(role_name) or self._find_image_file('background')
+            if not path:
+                return None
+            try:
+                try:
+                    resample = Image.Resampling.LANCZOS
+                except Exception:
+                    resample = Image.LANCZOS
+                img = Image.open(path).resize(size, resample)
+                return ImageTk.PhotoImage(img)
+            except Exception:
+                return None
+
+        cols = 5
+        r = c = 0
+
+        # 狼人数量专用 tile
+        werewolf_frame = ttk.Frame(self.roles_grid, padding=4, relief=tk.GROOVE)
+        w_img = load_img_for('werewolf')
+        w_img_lbl = ttk.Label(werewolf_frame, image=w_img)
+        w_img_lbl.image = w_img  # 防 GC
+        w_img_lbl.pack(side=tk.TOP)
+        ttk.Label(werewolf_frame, text=f"{ROLE_DISPLAY_NAMES.get('werewolf','werewolf')}（数量）").pack(side=tk.TOP, pady=(4, 0))
+        self.werewolf_count_var = tk.StringVar(value="2")
+        sp = ttk.Spinbox(werewolf_frame, from_=0, to=5, width=5, textvariable=self.werewolf_count_var,
+                         command=self._update_selection_summary)
+        sp.pack(side=tk.TOP, pady=(2, 2))
+        def inc_wolf(_e=None):
+            try:
+                v = int(self.werewolf_count_var.get())
+            except Exception:
+                v = 0
+            v = (v + 1) if v < 5 else 0
+            self.werewolf_count_var.set(str(v))
+            self._update_selection_summary()
+        w_img_lbl.bind('<Button-1>', inc_wolf)
+        self.werewolf_count_var.trace_add('write', lambda *a: self._update_selection_summary())
+
+        werewolf_frame.grid(row=r, column=c, padx=6, pady=6, sticky='n')
+        c += 1
+        if c >= cols:
+            r += 1; c = 0
+
+        # 其它角色：点击切换选中
+        self.role_tiles.clear()
+        for role in self.available_roles:
+            internal = role['internal']
+            display = role['display']
+            # 使用 tk.Frame 便于自定义背景与边框
+            frame = tk.Frame(self.roles_grid, bd=2, relief=tk.RIDGE, bg="#F9FAFB")
+            content = tk.Frame(frame, bg="#F9FAFB")
+            content.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+            img = load_img_for(internal)
+            img_lbl = tk.Label(content, image=img, bg="#F9FAFB")
+            img_lbl.image = img  # 防 GC
+            img_lbl.pack(side=tk.TOP)
+            txt = tk.Label(content, text=display, bg="#F9FAFB")
+            txt.pack(side=tk.TOP, pady=(4, 0))
+
+            # 选中角标（默认隐藏）
+            sel_badge = tk.Label(frame, text="✓ 已选", bg="#22C55E", fg="white", font=(None, 10, 'bold'))
+
+            sel = tk.BooleanVar(value=False)
+            # 选中高亮效果（改变 relief、背景和角标）
+            def toggle(_e=None, var=sel, fr=frame, badge=sel_badge):
+                var.set(not var.get())
+                if var.get():
+                    fr.configure(relief=tk.SOLID, bd=3, bg="#DCFCE7")
+                    content.configure(bg="#DCFCE7")
+                    img_lbl.configure(bg="#DCFCE7")
+                    txt.configure(bg="#DCFCE7")
+                    badge.place(relx=1.0, rely=0.0, anchor='ne', x=-2, y=2)
+                    badge.lift()
+                else:
+                    fr.configure(relief=tk.RIDGE, bd=2, bg="#F9FAFB")
+                    content.configure(bg="#F9FAFB")
+                    img_lbl.configure(bg="#F9FAFB")
+                    txt.configure(bg="#F9FAFB")
+                    badge.place_forget()
+                self._update_selection_summary()
+            img_lbl.bind('<Button-1>', toggle)
+            txt.bind('<Button-1>', toggle)
+            frame.grid(row=r, column=c, padx=6, pady=6, sticky='n')
+            self.role_tiles[internal] = {
+                'selected_var': sel,
+                'frame': frame,
+                'image_label': img_lbl,
+                'text_label': txt,
+                'badge_label': sel_badge,
+            }
+            c += 1
+            if c >= cols:
+                r += 1; c = 0
+
     def _expected_card_count(self):
         try:
             return int(self.spin.get()) + 3
@@ -157,13 +245,13 @@ class WerewolfApp:
 
     def _compute_role_selection(self):
         roles = ['werewolf'] * self._get_werewolf_count()
-        selected_indices = self.available_listbox.curselection()
-        for idx in selected_indices:
-            internal = self.available_roles[idx]["internal"]
-            if internal == "mason":
-                roles.extend(["mason", "mason"])
-            else:
-                roles.append(internal)
+        # 从图形化 tile 中读取选中状态
+        for internal, info in self.role_tiles.items():
+            if info['selected_var'].get():
+                if internal == 'mason':
+                    roles.extend(['mason', 'mason'])
+                else:
+                    roles.append(internal)
         return roles
 
     def _update_selection_summary(self, *args):
@@ -183,7 +271,7 @@ class WerewolfApp:
         if not self.roles_frame_visible:
             self.roles_frame.pack(fill=tk.BOTH, expand=False, pady=6)
             self.roles_frame_visible = True
-            self.available_listbox.focus_set()
+            self.roles_grid.focus_set()
 
     def deal(self):
         try:
@@ -266,7 +354,7 @@ class WerewolfApp:
             img_path = os.path.join(roles_dir, f"{role}.png")
             if os.path.exists(img_path):
                 try:
-                    img = Image.open(img_path).resize((100, 150), resample)
+                    img = Image.open(img_path).resize((160, 240), resample)
                     tk_img = ImageTk.PhotoImage(img)
                     img_label.config(image=tk_img)
                     self._img_cache[f"p{i}"] = tk_img
@@ -284,7 +372,7 @@ class WerewolfApp:
             img_path = os.path.join(roles_dir, f"{role}.png")
             if os.path.exists(img_path):
                 try:
-                    img = Image.open(img_path).resize((120, 180), resample)
+                    img = Image.open(img_path).resize((180, 270), resample)
                     tk_img = ImageTk.PhotoImage(img)
                     img_label.config(image=tk_img)
                     self._img_cache[f"c{j}"] = tk_img
@@ -313,8 +401,58 @@ class WerewolfApp:
                 return p
         return None
 
+    def _setup_background(self):
+        """设置窗口背景图，自动覆盖整个窗口并随大小变化缩放。"""
+        # 查找背景图片
+        bg_path = None
+        for name in ("background.jpg", "background.png"):
+            p = os.path.join(self._roles_dir(), name)
+            if os.path.exists(p):
+                bg_path = p
+                break
+        if not bg_path:
+            return
+
+        try:
+            self._bg_img_orig = Image.open(bg_path)
+        except Exception:
+            self._bg_img_orig = None
+            return
+
+        if not self._bg_label:
+            self._bg_label = tk.Label(self.root)
+            self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+            self._bg_label.lower()
+
+        def on_resize(_e=None):
+            if not self._bg_img_orig:
+                return
+            w = max(1, self.root.winfo_width())
+            h = max(1, self.root.winfo_height())
+            ow, oh = self._bg_img_orig.size
+            # cover: 按比例放大以覆盖窗口
+            scale = max(w / ow, h / oh)
+            nw, nh = int(ow * scale), int(oh * scale)
+            try:
+                resample = Image.Resampling.LANCZOS
+            except Exception:
+                resample = Image.LANCZOS
+            resized = self._bg_img_orig.resize((nw, nh), resample)
+            # 居中裁剪到窗口大小
+            left = max(0, (nw - w) // 2)
+            top = max(0, (nh - h) // 2)
+            right = min(nw, left + w)
+            bottom = min(nh, top + h)
+            cropped = resized.crop((left, top, right, bottom))
+            self._bg_img_tk = ImageTk.PhotoImage(cropped)
+            self._bg_label.configure(image=self._bg_img_tk)
+
+        # 首次渲染和大小改变时更新
+        self.root.bind('<Configure>', on_resize)
+        self.root.after(60, on_resize)
+
     def _load_placeholder_images(self):
-        # 加载 card_back(100x150) 与 center_back(120x180)
+        # 加载 card_back(140x210) 与 center_back(160x240)
         roles_dir = self._roles_dir()
         candidates = ["background.jpg", "background.png", "back.png", "card_back.png", "unknown.png"]
         placeholder = None
@@ -331,12 +469,12 @@ class WerewolfApp:
 
         if placeholder:
             try:
-                b = Image.open(placeholder).resize((100, 150), resample)
+                b = Image.open(placeholder).resize((140, 210), resample)
                 self._img_cache['card_back'] = ImageTk.PhotoImage(b)
             except Exception:
                 self._img_cache['card_back'] = None
             try:
-                c = Image.open(placeholder).resize((120, 180), resample)
+                c = Image.open(placeholder).resize((160, 240), resample)
                 self._img_cache['center_back'] = ImageTk.PhotoImage(c)
             except Exception:
                 self._img_cache['center_back'] = None
@@ -406,7 +544,7 @@ class WerewolfApp:
                         resample = Image.Resampling.LANCZOS
                     except Exception:
                         resample = Image.LANCZOS
-                    img = Image.open(img_file).resize((100, 150), resample)
+                    img = Image.open(img_file).resize((180, 270), resample)
                     tkimg = ImageTk.PhotoImage(img)
                     self._img_cache[f'p_real_{idx}'] = tkimg
                     self.viewer_img_lbl.config(image=tkimg)
@@ -528,7 +666,7 @@ class WerewolfApp:
             label.pack(side=tk.TOP, pady=4)
             label.bind("<Button-1>", lambda e, idx=idx: self._toggle_player_card(idx))
 
-            front = self._load_role_photo(role, (100, 150), f"board_player_{idx}", resample)
+            front = self._load_role_photo(role, (140, 210), f"board_player_{idx}", resample)
 
             self.board_player_widgets.append({
                 "index": idx,
@@ -549,7 +687,7 @@ class WerewolfApp:
             if back_center:
                 label.config(image=back_center)
             label.pack(side=tk.TOP, pady=4)
-            front = self._load_role_photo(role, (120, 180), f"center_{j}", resample)
+            front = self._load_role_photo(role, (160, 240), f"center_{j}", resample)
             widget = {
                 "index": j,
                 "label": label,
@@ -591,7 +729,7 @@ class WerewolfApp:
             if not widget["front"]:
                 widget["front"] = self._load_role_photo(
                     self.player_roles[idx],
-                    (100, 150),
+                    (140, 210),
                     f"board_player_{idx}"
                 )
             if widget["front"]:
@@ -669,13 +807,13 @@ class WerewolfApp:
             resample = Image.LANCZOS
         for idx, widget in enumerate(getattr(self, 'board_player_widgets', [])):
             role = self.player_roles[idx]
-            front = self._load_role_photo(role, (100, 150), f"board_player_{idx}", resample)
+            front = self._load_role_photo(role, (140, 210), f"board_player_{idx}", resample)
             widget["front"] = front
             if widget.get("revealed") and front:
                 widget["label"].config(image=front)
         for j, widget in enumerate(getattr(self, 'center_widgets', [])):
             role = self.center_roles[j]
-            front = self._load_role_photo(role, (120, 180), f"center_{j}", resample)
+            front = self._load_role_photo(role, (160, 240), f"center_{j}", resample)
             widget["front"] = front
             if widget.get("revealed") and front:
                 widget["label"].config(image=front)
