@@ -1,6 +1,7 @@
 import os
 import sys
 import math
+import random
 from collections import Counter
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -41,7 +42,6 @@ class WerewolfApp:
         self.dealer = WerewolfDealer()
         # 图片缓存，避免 PhotoImage 被 GC
         self._img_cache = {}
-        self.current_role_pool = None
 
         # 背景图相关
         self._bg_label = None
@@ -92,24 +92,31 @@ class WerewolfApp:
         self.deal_btn = ttk.Button(top, text="随机发牌", command=self.deal)
         self.deal_btn.pack(side=tk.LEFT, padx=6)
 
+        # 导出结果按钮
         self.export_btn = ttk.Button(top, text="导出结果", command=self.export, state=tk.DISABLED)
         self.export_btn.pack(side=tk.LEFT, padx=6)
 
         self.cards_frame = ttk.Frame(frm)
         self.cards_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        # 初始处于选角主页，隐藏牌面区域，避免留白
+        try:
+            self.cards_frame.pack_forget()
+        except Exception:
+            pass
 
         self._last_result = None
 
     def _load_available_roles(self):
-        """加载可选角色，返回 [{'display': str, 'internal': str}, ...]，排除狼人，由数量输入控制。"""
+        """加载可选角色，返回 [{'display': str, 'internal': str}, ...]，排除狼人/保镖/background。"""
         role_dirs = [
             os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'resources', 'roles')),
             os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images', 'roles'))
         ]
         role_dict = {}
+        excluded = {"werewolf", "background", "bodyguard"}
 
         for internal, display in ROLE_DISPLAY_NAMES.items():
-            if internal == "werewolf":
+            if internal in excluded:
                 continue
             role_dict.setdefault(internal, display)
 
@@ -121,7 +128,7 @@ class WerewolfApp:
                 if ext.lower() not in ('.png', '.jpg', '.jpeg', '.gif'):
                     continue
                 internal = WerewolfDealer.normalize_role(name)
-                if internal == "werewolf":
+                if internal in excluded:
                     continue
                 role_dict.setdefault(internal, ROLE_DISPLAY_NAMES.get(internal, name))
 
@@ -201,20 +208,29 @@ class WerewolfApp:
 
             sel = tk.BooleanVar(value=False)
             # 选中高亮效果（改变 relief、背景和角标）
-            def toggle(_e=None, var=sel, fr=frame, badge=sel_badge):
+            # 注意：通过默认参数绑定当前循环的控件，避免闭包晚绑定导致作用到其他卡片
+            def toggle(
+                _e=None,
+                var=sel,
+                fr=frame,
+                badge=sel_badge,
+                cont=content,
+                img_label=img_lbl,
+                txt_label=txt,
+            ):
                 var.set(not var.get())
                 if var.get():
                     fr.configure(relief=tk.SOLID, bd=3, bg="#DCFCE7")
-                    content.configure(bg="#DCFCE7")
-                    img_lbl.configure(bg="#DCFCE7")
-                    txt.configure(bg="#DCFCE7")
+                    cont.configure(bg="#DCFCE7")
+                    img_label.configure(bg="#DCFCE7")
+                    txt_label.configure(bg="#DCFCE7")
                     badge.place(relx=1.0, rely=0.0, anchor='ne', x=-2, y=2)
                     badge.lift()
                 else:
                     fr.configure(relief=tk.RIDGE, bd=2, bg="#F9FAFB")
-                    content.configure(bg="#F9FAFB")
-                    img_lbl.configure(bg="#F9FAFB")
-                    txt.configure(bg="#F9FAFB")
+                    cont.configure(bg="#F9FAFB")
+                    img_label.configure(bg="#F9FAFB")
+                    txt_label.configure(bg="#F9FAFB")
                     badge.place_forget()
                 self._update_selection_summary()
             img_lbl.bind('<Button-1>', toggle)
@@ -274,55 +290,107 @@ class WerewolfApp:
             self.roles_frame_visible = True
             self.roles_grid.focus_set()
 
+    def _show_cards_area(self):
+        # 确保牌面区域可见
+        try:
+            if not self.cards_frame.winfo_manager():
+                self.cards_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        except Exception:
+            pass
+
+    def _hide_cards_area(self):
+        # 隐藏牌面区域，回到“主页”状态时使用
+        try:
+            if self.cards_frame.winfo_manager():
+                self.cards_frame.pack_forget()
+        except Exception:
+            pass
+
     def deal(self):
-        if self.current_role_pool:
-            try:
-                res = self.dealer.start_game_with_selection(self.current_role_pool.copy())
-            except Exception as e:
-                messagebox.showerror("发牌失败", str(e))
-                return
+        """随机选角：基于可选角色池随机填充（不直接开始）。
+        规则：总牌数 = 玩家人数 + 3；狼人数量使用当前选择；守夜人计作两张，其它角色最多选一次。
+        """
+        # 读取玩家数与狼人数量
+        try:
+            player_cnt = int(self.spin.get())
+        except Exception:
+            messagebox.showerror("错误", "请输入有效人数")
+            return
+        try:
+            wolf_cnt = int(self.werewolf_count_var.get())
+        except Exception:
+            wolf_cnt = 0
 
-            player_roles = res['player_cards']
-            center = res['center_cards']
-        else:
+        total_needed = player_cnt + 3
+        if wolf_cnt < 0:
+            wolf_cnt = 0
+        if wolf_cnt > total_needed:
+            wolf_cnt = total_needed
+        # 其余牌数量
+        remaining = total_needed - wolf_cnt
+
+        # 构建可选角色池（不含狼人）
+        candidates = [r['internal'] for r in self.available_roles if r['internal'] != 'werewolf']
+        random.shuffle(candidates)
+
+        picked = []
+        for role in candidates:
+            weight = 2 if role == 'mason' else 1
+            if weight <= remaining:
+                picked.append(role)
+                remaining -= weight
+            if remaining == 0:
+                break
+
+        if remaining != 0:
+            messagebox.showerror("随机失败", "可选角色不足以组成完整牌堆，请调整狼人数量或玩家人数。")
+            return
+
+        # 先清空所有 tile 的选中高亮
+        for internal, info in self.role_tiles.items():
+            sel = info['selected_var']
+            sel.set(False)
+            fr = info['frame']; cont = info['frame'].winfo_children()[0] if info['frame'].winfo_children() else None
+            img_label = info.get('image_label'); txt_label = info.get('text_label'); badge = info.get('badge_label')
             try:
-                count = int(self.spin.get())
+                fr.configure(relief=tk.RIDGE, bd=2, bg="#F9FAFB")
+                if cont: cont.configure(bg="#F9FAFB")
+                if img_label: img_label.configure(bg="#F9FAFB")
+                if txt_label: txt_label.configure(bg="#F9FAFB")
+                if badge: badge.place_forget()
             except Exception:
-                messagebox.showerror("错误", "请输入有效人数")
-                return
+                pass
 
-            modes = self.dealer.get_available_modes(count)
-            mode = modes[0] if modes else "入门"
-
+        # 应用新选择（mason 代表两张，其它每个代表一张）
+        for internal in picked:
+            info = self.role_tiles.get(internal)
+            if not info:
+                continue
+            info['selected_var'].set(True)
+            fr = info['frame']; cont = info['frame'].winfo_children()[0] if info['frame'].winfo_children() else None
+            img_label = info.get('image_label'); txt_label = info.get('text_label'); badge = info.get('badge_label')
             try:
-                player_roles, center = self.dealer.deal(count, mode=mode)
-            except Exception as e:
-                messagebox.showerror("发牌失败", str(e))
-                return
+                fr.configure(relief=tk.SOLID, bd=3, bg="#DCFCE7")
+                if cont: cont.configure(bg="#DCFCE7")
+                if img_label: img_label.configure(bg="#DCFCE7")
+                if txt_label: txt_label.configure(bg="#DCFCE7")
+                if badge: badge.place(relx=1.0, rely=0.0, anchor='ne', x=-2, y=2); badge.lift()
+            except Exception:
+                pass
 
-            # 初始化 dealer.session
-            self.dealer.session = {
-                "player_count": count,
-                "player_cards": player_roles.copy(),
-                "center_cards": center.copy(),
-                "viewed": [False] * count,
-                "turn_index": 0,
-                "action_phase": True,
-                "history": []
-            }
-            self.current_role_pool = player_roles.copy() + center.copy()
-
-        self._last_result = (player_roles, center)
-        self.export_btn['state'] = tk.NORMAL
-
-        # 启动按序查看流程
-        self.start_sequential_viewing(player_roles, center)
-        self._hide_role_selection()
+        # 更新选角统计文本，保持选角区可见，等待用户点击“开始局”
+        try:
+            self.werewolf_count_var.set(str(wolf_cnt))
+        except Exception:
+            pass
+        self._show_role_selection()
+        self._hide_cards_area()
+        self._update_selection_summary()
 
     def start_game(self):
         """从用户在 listbox 中选择的角色开始一局（数量 = 玩家数 + 3），并进入按序查看流程。"""
         if not self.roles_frame_visible:
-            # 首次点击用于展开角色选择
+            # 若选择区被折叠，恢复选择区（仅用于还在选角阶段的切换）
             self._show_role_selection()
             return
 
@@ -335,16 +403,76 @@ class WerewolfApp:
             messagebox.showerror("错误", f"当前选择的牌数量为 {len(sel)} 张，应为 {expected} 张。")
             return
         try:
-            self.current_role_pool = sel.copy()
             res = self.dealer.start_game_with_selection(sel)
         except Exception as e:
             messagebox.showerror("开始失败", str(e))
             return
 
         self._last_result = (res['player_cards'], res['center_cards'])
-        self.export_btn['state'] = tk.NORMAL
+        # 开始后允许导出
+        try:
+            self.export_btn['state'] = tk.NORMAL
+        except Exception:
+            pass
         self.start_sequential_viewing(res['player_cards'], res['center_cards'])
         self._hide_role_selection()
+        self._switch_start_to_restart()
+
+    def _switch_start_to_restart(self):
+        # 将“开始局”按钮切换为“重新开始”
+        try:
+            self.start_btn.config(text="重新开始", command=self._confirm_restart)
+        except Exception:
+            pass
+
+    def _switch_restart_to_start(self):
+        # 恢复为“开始局”
+        try:
+            self.start_btn.config(text="开始局", command=self.start_game)
+        except Exception:
+            pass
+
+    def _confirm_restart(self):
+        if messagebox.askyesno("确认", "确定要重新开始吗？当前局面将被重置。"):
+            self._restart_game()
+
+    def _restart_game(self):
+        # 退出夜晚模式/聚焦模式
+        try:
+            if getattr(self, 'night_mode', False):
+                self.night_mode = False
+            if hasattr(self, 'night_panel') and self.night_panel and self.night_panel.winfo_exists():
+                self.night_panel.destroy()
+            if hasattr(self, 'focus_frame') and self.focus_frame and self.focus_frame.winfo_exists():
+                self.focus_frame.destroy()
+        except Exception:
+            pass
+        # 清空牌桌与查看视图
+        try:
+            for w in self.cards_frame.winfo_children():
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # 隐藏牌面区域，避免主页顶部留白
+        self._hide_cards_area()
+        # 重置状态
+        self._last_result = None
+        # 清空 dealer 会话
+        try:
+            self.dealer.session = {}
+        except Exception:
+            pass
+        # 重置导出按钮
+        try:
+            self.export_btn['state'] = tk.DISABLED
+        except Exception:
+            pass
+        # 恢复角色选择区，按钮切回“开始局”
+        self._show_role_selection()
+        self._switch_restart_to_start()
 
     def display_cards(self, player_roles, center):
         """把给定的玩家牌和中央牌显示在界面上（与原有 deal 复用逻辑）。"""
@@ -392,8 +520,11 @@ class WerewolfApp:
                 except Exception:
                     pass
             img_label.pack(side=tk.TOP, pady=4)
-
-        self.export_btn['state'] = tk.NORMAL
+        # 可导出
+        try:
+            self.export_btn['state'] = tk.NORMAL
+        except Exception:
+            pass
 
     # ---- 新增: 序列查看与夜晚交互流程 ----
     def _roles_dir(self):
@@ -497,6 +628,8 @@ class WerewolfApp:
 
     def start_sequential_viewing(self, player_roles, center_roles):
         """按玩家顺序查看：初始只显示 玩家1 的占位；第一次点击显示该玩家图片与名字；第二次点击进入下一个玩家。"""
+        # 显示牌面区域
+        self._show_cards_area()
         # 保存数据
         self.player_roles = list(player_roles)
         self.center_roles = list(center_roles)
@@ -561,11 +694,11 @@ class WerewolfApp:
                     tkimg = ImageTk.PhotoImage(img)
                     self._img_cache[f'p_real_{idx}'] = tkimg
                     self.viewer_img_lbl.config(image=tkimg)
-                # 显示角色名
-                self.viewer_name_lbl.config(text=role)
+                # 显示角色名（中文）
+                self.viewer_name_lbl.config(text=self._get_role_display_name(role))
             except Exception:
                 # fallback: show role text only
-                self.viewer_name_lbl.config(text=role)
+                self.viewer_name_lbl.config(text=self._get_role_display_name(role))
 
             # 通知 dealer
             try:
@@ -623,11 +756,13 @@ class WerewolfApp:
 
     # 夜晚可执行的简单操作：查看中央牌、与玩家交换
     def on_all_viewed(self):
-        """所有玩家查看完毕后，搭建桌面供自由查看与交换。"""
+        """当所有玩家完成查看后，布置桌面并进入夜晚阶段。"""
         self._setup_board_area()
 
     def _setup_board_area(self):
         """构建玩家和中央牌的桌面区域，可重复使用用于刷新。"""
+        # 显示牌面区域
+        self._show_cards_area()
         self._sync_from_session()
 
         for w in self.cards_frame.winfo_children():
@@ -635,6 +770,8 @@ class WerewolfApp:
 
         container = ttk.Frame(self.cards_frame, padding=6)
         container.pack(fill=tk.BOTH, expand=True)
+        # 保存容器，便于进入“聚焦模式”时切换显示
+        self.board_container = container
 
         self.board_player_widgets = []
         self.center_widgets = []
@@ -647,8 +784,8 @@ class WerewolfApp:
 
         controls = ttk.Frame(container, padding=6)
         controls.pack(fill=tk.X)
-        ttk.Button(controls, text="交换两名玩家角色", command=self._manual_swap_players).pack(side=tk.LEFT)
-
+        self.controls_frame = controls
+        ttk.Button(controls, text="开始夜晚", command=self._start_guided_night).pack(side=tk.LEFT, padx=(0,8))
         self._populate_board_widgets()
 
     def _populate_board_widgets(self):
@@ -677,7 +814,7 @@ class WerewolfApp:
             if back:
                 label.config(image=back)
             label.pack(side=tk.TOP, pady=4)
-            label.bind("<Button-1>", lambda e, idx=idx: self._toggle_player_card(idx))
+            label.bind("<Button-1>", lambda e, idx=idx: self._on_board_player_click(idx))
 
             front = self._load_role_photo(role, (140, 210), f"board_player_{idx}", resample)
 
@@ -708,7 +845,7 @@ class WerewolfApp:
                 "back": back_center,
                 "revealed": False
             }
-            label.bind("<Button-1>", lambda e, idx=j: self._toggle_center_card(idx))
+            label.bind("<Button-1>", lambda e, idx=j: self._on_center_card_click(idx))
             self.center_widgets.append(widget)
 
     def _load_role_photo(self, role, size, cache_key, resample=None):
@@ -748,6 +885,19 @@ class WerewolfApp:
             if widget["front"]:
                 widget["label"].config(image=widget["front"])
             widget["revealed"] = True
+
+    # --- 夜晚引导：点击包装 ---
+    def _on_board_player_click(self, idx, event=None):
+        if getattr(self, 'night_mode', False):
+            self._night_handle_player_click(idx)
+            return
+        self._toggle_player_card(idx)
+
+    def _on_center_card_click(self, idx, event=None):
+        if getattr(self, 'night_mode', False):
+            self._night_handle_center_click(idx)
+            return
+        self._toggle_center_card(idx)
 
     def _toggle_center_card(self, idx):
         if idx < 0 or idx >= len(self.center_widgets):
@@ -830,6 +980,632 @@ class WerewolfApp:
             widget["front"] = front
             if widget.get("revealed") and front:
                 widget["label"].config(image=front)
+
+    def _auto_night(self):
+        """调用发牌引擎的自动夜晚，刷新桌面并弹出简要摘要。"""
+        try:
+            log = self.dealer.run_night_automation()
+        except Exception as e:
+            messagebox.showerror("自动夜晚失败", str(e))
+            return
+        # 刷新本地缓存并更新图片
+        self._sync_from_session()
+        self._refresh_board_images()
+
+        # 摘要仅显示有状态变化的动作
+        summaries = []
+        for item in log:
+            r = item.get("role")
+            if r == "robber" and "swapped_with" in item:
+                summaries.append(f"强盗{item['robber']+1} 与 玩家{item['swapped_with']+1} 交换")
+            elif r == "troublemaker" and "swapped" in item:
+                a, b = item["swapped"]
+                summaries.append(f"捣蛋鬼{item['troublemaker']+1} 交换 玩家{a+1} 与 玩家{b+1}")
+            elif r == "drunk" and "center_index" in item:
+                summaries.append(f"酒鬼{item['drunk']+1} 与 中央{item['center_index']+1} 交换")
+        if not summaries:
+            summaries.append("本夜无牌面变化（或仅查看类行动）")
+        messagebox.showinfo("夜晚完成", "\n".join(summaries))
+
+    # === 引导式夜晚 ===
+    def _start_guided_night(self):
+        self.night_mode = True
+        self.night_steps = self.dealer.get_night_steps()
+        self.night_step_idx = 0
+        # 构建夜晚面板
+        if hasattr(self, 'night_panel') and self.night_panel and self.night_panel.winfo_exists():
+            self.night_panel.destroy()
+        self.night_panel = ttk.Labelframe(self.cards_frame, text="夜晚阶段", padding=6)
+        self.night_panel.pack(fill=tk.X, padx=6, pady=6)
+        self.night_text = ttk.Label(self.night_panel, text="")
+        self.night_text.pack(side=tk.LEFT)
+        self.night_countdown_var = tk.StringVar(value="15")
+        self.night_countdown_lbl = ttk.Label(self.night_panel, textvariable=self.night_countdown_var)
+        self.night_countdown_lbl.pack(side=tk.RIGHT)
+        self.night_buttons_frame = ttk.Frame(self.night_panel)
+        self.night_buttons_frame.pack(fill=tk.X, pady=(6,0))
+        self._run_night_step()
+
+    def _run_night_step(self):
+        # 清理上一轮的动态按钮
+        for w in self.night_buttons_frame.winfo_children():
+            w.destroy()
+        self.night_click_mode = None
+        self.night_action_state = {}
+        # 倒计时 15 秒
+        self.night_remaining = 15
+        self._night_tick()
+
+        if self.night_step_idx >= len(self.night_steps):
+            self.night_text.config(text="夜晚结束。")
+            ttk.Button(self.night_buttons_frame, text="结束夜晚", command=self._end_guided_night).pack(side=tk.LEFT)
+            return
+
+        step = self.night_steps[self.night_step_idx]
+        role = step.get('role')
+        players = step.get('players', [])
+        self.night_current_role = role
+
+        # 进入聚焦模式，仅呈现与该角色相关的卡片
+        self._enter_focus_mode()
+
+        if role == 'doppelganger':
+            # 化身幽灵：选择一名其他玩家，查看并复制其角色
+            dg_indices = players  # 可能有多个化身幽灵，通常为1
+            selectable_players = [i for i in range(len(self.player_roles)) if i not in dg_indices]
+            self.night_text.config(text="化身幽灵：请选择一名其他玩家查看并复制其角色。选择后点击‘确认复制’。")
+            self._focus_show_players(selectable_players, on_click=lambda i: self._dg_select_target(i))
+            btn = ttk.Button(self.night_buttons_frame, text="确认复制", command=self._dg_confirm_copy)
+            btn.state(["disabled"])  # 未选择前禁用
+            self.night_action_state['dg_confirm_btn'] = btn
+            self.night_action_state['dg_player_indices'] = dg_indices
+            self.night_action_state['dg_target'] = None
+            self.night_action_state['dg_copied_role'] = None
+            btn.pack(side=tk.LEFT)
+        elif role == 'werewolf':
+            if len(players) == 1:
+                self.night_text.config(text="狼人：你为独狼，可查看中央任意一张牌。点击一张中央牌后仅展示该牌，随后点击继续。")
+                # 只显示中央三张
+                self._focus_show_centers([0,1,2], on_click=lambda j: self._focus_reveal_center_and_single(j))
+                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+            else:
+                self.night_text.config(text="狼人：请互相确认身份（提示模式）。")
+                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+        elif role == 'minion':
+            self.night_text.config(text="爪牙：请确认场上有哪些狼人（提示模式）。")
+            ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+        elif role == 'mason':
+            self.night_text.config(text="守夜人：两位守夜人请互相确认身份。")
+            ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+        elif role == 'seer':
+            self.night_text.config(text="预言家：请选择‘查看两张中央’或‘查看一名玩家’，完成操作后将出现‘继续’按钮。");
+            # 先仅显示两种行动按钮，不显示“继续”；选择后隐藏行动按钮
+            btn_center = ttk.Button(self.night_buttons_frame, text="查看两张中央", command=self._seer_mode_center)
+            btn_center.pack(side=tk.LEFT)
+            btn_player = ttk.Button(self.night_buttons_frame, text="查看一名玩家", command=self._seer_mode_player)
+            btn_player.pack(side=tk.LEFT)
+            self.night_action_state['seer_btns'] = [btn_center, btn_player]
+        elif role == 'robber':
+            r_idx = players[0] if players else None
+            if r_idx is not None:
+                self.night_action_state['robber'] = r_idx
+                self.night_text.config(text=f"强盗：玩家{r_idx+1}，请选择一名其他玩家交换。单击目标后，仅展示其牌面，然后点击继续。")
+                # 展示除强盗本人外的玩家卡
+                other_indices = [i for i in range(len(self.player_roles)) if i != r_idx]
+                self._focus_show_players(other_indices, on_click=lambda i: self._robber_choose_target_and_show(i))
+                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+            else:
+                self.night_text.config(text="强盗：未找到强盗（提示模式）。")
+                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+        elif role == 'troublemaker':
+            t_idx = players[0] if players else None
+            if t_idx is not None:
+                self.night_action_state['tm'] = t_idx
+                self.night_action_state['sel'] = []
+                self.night_text.config(text=f"捣蛋鬼：玩家{t_idx+1}，请选择两名玩家交换。再次点击已选卡可取消选择。点击‘确认交换’生效。")
+                self._focus_show_players(list(range(len(self.player_roles))), on_click=lambda i: self._tm_toggle_select(i), allow_self=True)
+                btn = ttk.Button(self.night_buttons_frame, text="确认交换", command=self._tm_confirm_swap)
+                btn.state(["disabled"])  # 至少两张才启用
+                self.night_action_state['tm_confirm_btn'] = btn
+                btn.pack(side=tk.LEFT)
+            else:
+                self.night_text.config(text="捣蛋鬼：未找到捣蛋鬼（提示模式）。")
+                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+        elif role == 'drunk':
+            d_idx = players[0] if players else None
+            if d_idx is not None:
+                self.night_action_state['drunk'] = d_idx
+                self.night_action_state['center_sel'] = None
+                self.night_text.config(text=f"酒鬼：玩家{d_idx+1}，请选择一张中央牌进行交换（不展示新牌）。选择后点击‘确认交换’。")
+                self._focus_show_centers([0,1,2], on_click=lambda j: self._drunk_select_center(j))
+                btn = ttk.Button(self.night_buttons_frame, text="确认交换", command=self._drunk_confirm_swap)
+                btn.state(["disabled"])  # 未选择中心牌前禁用
+                self.night_action_state['drunk_confirm_btn'] = btn
+                btn.pack(side=tk.LEFT)
+            else:
+                self.night_text.config(text="酒鬼：未找到酒鬼（提示模式）。")
+                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+        elif role == 'insomniac':
+            i_idx = players[0] if players else None
+            if i_idx is not None:
+                self.night_text.config(text=f"失眠者：玩家{i_idx+1}，查看你当前的牌，然后点击继续。")
+                # 仅展示该玩家当前牌
+                self._focus_show_single_role(self.player_roles[i_idx], title=f"玩家{i_idx+1}")
+                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+            else:
+                self.night_text.config(text="失眠者：未找到失眠者（提示模式）。")
+                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+
+    def _night_set_mode(self, mode: str):
+        self.night_click_mode = mode
+
+    def _night_tick(self):
+        if not getattr(self, 'night_mode', False):
+            return
+        self.night_countdown_var.set(str(self.night_remaining))
+        if self.night_remaining <= 0:
+            return
+        self.night_remaining -= 1
+        self.root.after(1000, self._night_tick)
+
+    def _next_night_step(self):
+        # 离开当前聚焦模块并刷新牌桌视图
+        try:
+            self._leave_focus_mode()
+        except Exception:
+            pass
+        # 同步一次数据并刷新底部牌面，避免下一步看到旧图
+        try:
+            self._sync_from_session()
+            self._refresh_board_images()
+        except Exception:
+            pass
+        self.night_step_idx += 1
+        self._run_night_step()
+
+    def _end_guided_night(self):
+        self.night_mode = False
+        if hasattr(self, 'night_panel') and self.night_panel and self.night_panel.winfo_exists():
+            self.night_panel.destroy()
+
+    # === 聚焦模式（每个角色独立模块的卡片视图） ===
+    def _enter_focus_mode(self):
+        # 隐藏原有牌桌
+        try:
+            self.player_grid_frame.pack_forget()
+            self.center_frame.pack_forget()
+            self.controls_frame.pack_forget()
+        except Exception:
+            pass
+        if hasattr(self, 'focus_frame') and self.focus_frame and self.focus_frame.winfo_exists():
+            self.focus_frame.destroy()
+        self.focus_frame = tk.Frame(self.board_container, bg="#111")
+        self.focus_frame.pack(fill=tk.BOTH, expand=True)
+        self.focus_widgets = []
+
+    def _leave_focus_mode(self):
+        # 销毁聚焦视图，恢复牌桌
+        if hasattr(self, 'focus_frame') and self.focus_frame and self.focus_frame.winfo_exists():
+            self.focus_frame.destroy()
+        try:
+            self.player_grid_frame.pack(fill=tk.BOTH, expand=True)
+            self.center_frame.pack(fill=tk.X)
+            self.controls_frame.pack(fill=tk.X)
+        except Exception:
+            pass
+
+    def _focus_clear(self):
+        for w in getattr(self, 'focus_widgets', []):
+            try:
+                w['frame'].destroy()
+            except Exception:
+                pass
+        self.focus_widgets = []
+
+    def _focus_add_player_card(self, idx, on_click=None, reveal_role=None):
+        frame = tk.Frame(self.focus_frame, bd=3, relief=tk.GROOVE, bg="#222")
+        # 自动布局为流式网格
+        row = len(self.focus_widgets) // 5
+        col = len(self.focus_widgets) % 5
+        frame.grid(row=row, column=col, padx=10, pady=10)
+        # 玩家编号标题，便于操作
+        ttk.Label(frame, text=f"玩家{idx+1}").pack(side=tk.TOP, pady=(4, 2))
+        lbl = ttk.Label(frame)
+        if reveal_role is None:
+            back = self._img_cache.get('card_back')
+            if back:
+                lbl.config(image=back)
+        else:
+            front = self._load_role_photo(reveal_role, (160, 240), f"focus_player_{idx}")
+            if front:
+                lbl.config(image=front)
+        lbl.pack()
+        # 中文角色名（仅在 reveal_role 提供时显示）
+        name_lbl = ttk.Label(frame, text=self._get_role_display_name(reveal_role) if reveal_role else "")
+        if reveal_role:
+            name_lbl.pack(pady=(4, 2))
+        if on_click:
+            lbl.bind("<Button-1>", lambda e, i=idx: on_click(i))
+        self.focus_widgets.append({'frame': frame, 'label': lbl, 'name_label': name_lbl, 'type': 'player', 'index': idx, 'selected': False})
+
+    def _focus_add_center_card(self, j, on_click=None, reveal_role=None):
+        frame = tk.Frame(self.focus_frame, bd=3, relief=tk.GROOVE, bg="#222")
+        row = len(self.focus_widgets) // 5
+        col = len(self.focus_widgets) % 5
+        frame.grid(row=row, column=col, padx=10, pady=10)
+        lbl = ttk.Label(frame)
+        if reveal_role is None:
+            img = self._img_cache.get('center_back') or self._img_cache.get('card_back')
+            if img:
+                lbl.config(image=img)
+        else:
+            front = self._load_role_photo(reveal_role, (160, 240), f"focus_center_{j}")
+            if front:
+                lbl.config(image=front)
+        lbl.pack()
+        # 中文角色名（仅在 reveal_role 提供时显示）
+        name_lbl = ttk.Label(frame, text=self._get_role_display_name(reveal_role) if reveal_role else "")
+        if reveal_role:
+            name_lbl.pack(pady=(4, 2))
+        if on_click:
+            lbl.bind("<Button-1>", lambda e, k=j: on_click(k))
+        self.focus_widgets.append({'frame': frame, 'label': lbl, 'name_label': name_lbl, 'type': 'center', 'index': j, 'selected': False})
+
+    def _focus_show_players(self, indices, on_click=None, allow_self=False):
+        self._focus_clear()
+        for i in indices:
+            self._focus_add_player_card(i, on_click=on_click)
+
+    def _focus_show_centers(self, indices, on_click=None):
+        self._focus_clear()
+        for j in indices:
+            self._focus_add_center_card(j, on_click=on_click)
+
+    def _focus_show_single_role(self, role, title=None):
+        self._focus_clear()
+        # 展示单张放大
+        frame = tk.Frame(self.focus_frame, bd=4, relief=tk.RIDGE, bg="#222")
+        frame.pack(pady=10)
+        if title:
+            ttk.Label(frame, text=title).pack(side=tk.TOP, pady=(6, 4))
+        lbl = ttk.Label(frame)
+        img = self._load_role_photo(role, (200, 300), f"focus_single_{role}")
+        if img:
+            lbl.config(image=img)
+        lbl.pack()
+        # 中文角色名
+        ttk.Label(frame, text=self._get_role_display_name(role)).pack(pady=(6, 2))
+        self.focus_widgets.append({'frame': frame, 'label': lbl})
+
+    # === 各角色聚焦交互的具体处理 ===
+    def _focus_reveal_center_and_single(self, j):
+        # 展示所点中央牌的正面，随后仅保留该牌
+        role = self.center_roles[j]
+        self._focus_show_single_role(role, title=f"中央{j+1}")
+
+    # 化身幽灵：选择并展示目标玩家角色
+    def _dg_select_target(self, target_idx):
+        try:
+            role = self.player_roles[target_idx]
+        except Exception:
+            role = None
+        if role:
+            self._focus_show_single_role(role, title=f"玩家{target_idx+1}")
+        self.night_action_state['dg_target'] = target_idx
+        self.night_action_state['dg_copied_role'] = role
+        # 启用确认按钮
+        btn = self.night_action_state.get('dg_confirm_btn')
+        if btn:
+            try:
+                btn.state(["!disabled"])  # 启用
+            except Exception:
+                pass
+
+    def _dg_confirm_copy(self):
+        # 这里仅推进流程；若需落地到引擎，可在 dealer.session 记录复制信息
+        try:
+            btn = self.night_action_state.get('dg_confirm_btn')
+            if btn:
+                btn.state(["disabled"])  # 防止重复点击
+        except Exception:
+            pass
+        # TODO: 可选：将复制信息写入引擎会话，供后续动作参考
+        # s = self.dealer.get_session(); s['doppelganger'] = {...}
+        self._next_night_step()
+
+    def _robber_choose_target_and_show(self, target_idx):
+        r_idx = self.night_action_state.get('robber')
+        if r_idx is None or target_idx == r_idx:
+            return
+        # 先记录目标当下牌面用于展示
+        try:
+            role_before = self.player_roles[target_idx]
+        except Exception:
+            role_before = None
+        # 执行交换
+        try:
+            self.dealer.swap_between_players(r_idx, target_idx)
+        except Exception:
+            pass
+        self._sync_from_session()
+        # 仅展示目标牌（按需求展示其角色）
+        if role_before:
+            self._focus_show_single_role(role_before, title=f"玩家{target_idx+1}")
+        else:
+            self._focus_clear()
+
+    def _tm_toggle_select(self, idx):
+        sel = self.night_action_state.get('sel', [])
+        # 查找对应focus部件
+        widget = None
+        for w in self.focus_widgets:
+            if w.get('type') == 'player' and w.get('index') == idx:
+                widget = w
+                break
+        if not widget:
+            return
+        if idx in sel:
+            sel.remove(idx)
+            try:
+                widget['frame'].config(bg="#222")
+            except Exception:
+                pass
+        else:
+            sel.append(idx)
+            try:
+                widget['frame'].config(bg="#2e7d32")  # 选中高亮
+            except Exception:
+                pass
+        # 最多保留两个
+        if len(sel) > 2:
+            # 移除最早的一个选中并还原其颜色
+            drop = sel.pop(0)
+            for w in self.focus_widgets:
+                if w.get('type') == 'player' and w.get('index') == drop:
+                    try:
+                        w['frame'].config(bg="#222")
+                    except Exception:
+                        pass
+                    break
+        self.night_action_state['sel'] = sel
+        # 更新确认按钮可用性
+        btn = self.night_action_state.get('tm_confirm_btn')
+        if btn:
+            if len(sel) == 2:
+                try:
+                    btn.state(["!disabled"])  # 启用
+                except Exception:
+                    pass
+            else:
+                try:
+                    btn.state(["disabled"])  # 禁用
+                except Exception:
+                    pass
+
+    def _tm_confirm_swap(self):
+        sel = self.night_action_state.get('sel', [])
+        if len(sel) != 2:
+            return
+        a, b = sel[0], sel[1]
+        try:
+            self.dealer.swap_between_players(a, b)
+        except Exception:
+            pass
+        self._sync_from_session()
+        # 交换完成后立即结束该角色回合
+        try:
+            btn = self.night_action_state.get('tm_confirm_btn')
+            if btn:
+                btn.state(["disabled"])  # 防止重复点击
+        except Exception:
+            pass
+        self._next_night_step()
+
+    def _drunk_select_center(self, j):
+        # 高亮所选中心牌
+        self.night_action_state['center_sel'] = j
+        for w in self.focus_widgets:
+            if w.get('type') == 'center':
+                try:
+                    w['frame'].config(bg="#222")
+                except Exception:
+                    pass
+        for w in self.focus_widgets:
+            if w.get('type') == 'center' and w.get('index') == j:
+                try:
+                    w['frame'].config(bg="#2e7d32")
+                except Exception:
+                    pass
+                break
+        btn = self.night_action_state.get('drunk_confirm_btn')
+        if btn:
+            try:
+                btn.state(["!disabled"])  # 启用
+            except Exception:
+                pass
+
+    def _drunk_confirm_swap(self):
+        d_idx = self.night_action_state.get('drunk')
+        j = self.night_action_state.get('center_sel')
+        if d_idx is None or j is None:
+            return
+        try:
+            self.dealer.swap_with_center(d_idx, j)
+        except Exception:
+            pass
+        self._sync_from_session()
+        # 交换完成后立即结束该角色回合
+        try:
+            btn = self.night_action_state.get('drunk_confirm_btn')
+            if btn:
+                btn.state(["disabled"])  # 防止重复点击
+        except Exception:
+            pass
+        self._next_night_step()
+
+    # 预言家子模式
+    def _seer_mode_center(self):
+        # 隐藏行动按钮
+        for b in self.night_action_state.get('seer_btns', []) or []:
+            try:
+                b.destroy()
+            except Exception:
+                pass
+        # 移除可能残留的继续按钮
+        btnc = self.night_action_state.get('seer_continue_btn')
+        if btnc:
+            try:
+                btnc.destroy()
+            except Exception:
+                pass
+            self.night_action_state['seer_continue_btn'] = None
+
+        self.night_action_state['seer_center_remaining'] = 2
+        self._focus_show_centers([0,1,2], on_click=self._seer_reveal_center)
+
+    def _seer_reveal_center(self, j):
+        remain = self.night_action_state.get('seer_center_remaining', 0)
+        if remain <= 0:
+            return
+        # 将该中心牌翻为正面
+        for w in self.focus_widgets:
+            if w.get('type') == 'center' and w.get('index') == j:
+                role = self.center_roles[j]
+                front = self._load_role_photo(role, (160, 240), f"focus_center_{j}")
+                if front:
+                    w['label'].config(image=front)
+                # 同步显示中文角色名
+                name_lbl = w.get('name_label')
+                if name_lbl is not None:
+                    try:
+                        name_lbl.config(text=self._get_role_display_name(role))
+                        if not name_lbl.winfo_ismapped():
+                            name_lbl.pack(pady=(4, 2))
+                    except Exception:
+                        pass
+                break
+        remain -= 1
+        self.night_action_state['seer_center_remaining'] = remain
+        # 当完成两张中央的查看后，才出现“继续”按钮
+        if remain <= 0 and not self.night_action_state.get('seer_continue_btn'):
+            btnc = ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step)
+            btnc.pack(side=tk.RIGHT)
+            self.night_action_state['seer_continue_btn'] = btnc
+
+    def _seer_mode_player(self):
+        # 隐藏行动按钮
+        for b in self.night_action_state.get('seer_btns', []) or []:
+            try:
+                b.destroy()
+            except Exception:
+                pass
+        # 移除可能残留的继续按钮
+        btnc = self.night_action_state.get('seer_continue_btn')
+        if btnc:
+            try:
+                btnc.destroy()
+            except Exception:
+                pass
+            self.night_action_state['seer_continue_btn'] = None
+
+        self.night_action_state['seer_player_done'] = False
+        self._focus_show_players(list(range(len(self.player_roles))), on_click=self._seer_reveal_player)
+
+    def _seer_reveal_player(self, i):
+        # 仅允许查看一次
+        if self.night_action_state.get('seer_player_done'):
+            return
+        role = self.player_roles[i]
+        self._focus_show_single_role(role, title=f"玩家{i+1}")
+        self.night_action_state['seer_player_done'] = True
+        # 完成查看后，出现“继续”按钮
+        if not self.night_action_state.get('seer_continue_btn'):
+            btnc = ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step)
+            btnc.pack(side=tk.RIGHT)
+            self.night_action_state['seer_continue_btn'] = btnc
+
+    # --- 夜晚点击处理 ---
+    def _night_handle_player_click(self, idx):
+        mode = getattr(self, 'night_click_mode', None)
+        if mode == 'seer_player':
+            # 临时翻开该玩家牌
+            self._reveal_player_front(idx)
+            # 看完允许继续点其它吗？按规则只看一名玩家，这里看一次即可
+            self.night_click_mode = None
+        elif mode == 'robber_target':
+            r_idx = self.night_action_state.get('robber')
+            if r_idx is None or idx == r_idx:
+                return
+            try:
+                self.dealer.swap_between_players(r_idx, idx)
+            except Exception:
+                return
+            self._refresh_board_images()
+            # 可提示强盗新牌
+            self._reveal_player_front(r_idx)
+            self.night_click_mode = None
+        elif mode == 'troublemaker':
+            sel = self.night_action_state.get('sel', [])
+            if idx not in sel:
+                sel.append(idx)
+            if len(sel) >= 2:
+                a, b = sel[0], sel[1]
+                try:
+                    self.dealer.swap_between_players(a, b)
+                except Exception:
+                    pass
+                self._refresh_board_images()
+                self.night_click_mode = None
+            self.night_action_state['sel'] = sel
+
+    def _night_handle_center_click(self, idx):
+        mode = getattr(self, 'night_click_mode', None)
+        if mode == 'werewolf_center':
+            # 独狼看一张中央
+            self._reveal_center_front(idx)
+            self.night_action_state['peeked'] = True
+            self.night_click_mode = None
+        elif mode == 'seer_center':
+            remain = self.night_action_state.get('seer_center_remaining', 0)
+            if remain <= 0:
+                return
+            self._reveal_center_front(idx)
+            remain -= 1
+            self.night_action_state['seer_center_remaining'] = remain
+            if remain <= 0:
+                self.night_click_mode = None
+        elif mode == 'drunk_center':
+            d_idx = self.night_action_state.get('drunk')
+            if d_idx is None:
+                return
+            try:
+                self.dealer.swap_with_center(d_idx, idx)
+            except Exception:
+                return
+            self._sync_from_session()
+            self._refresh_board_images()
+            self.night_click_mode = None
+
+    # 辅助：直接把某玩家牌面显示为正面
+    def _reveal_player_front(self, idx):
+        if not (0 <= idx < len(self.board_player_widgets)):
+            return
+        widget = self.board_player_widgets[idx]
+        if not widget.get('front'):
+            widget['front'] = self._load_role_photo(self.player_roles[idx], (140, 210), f"board_player_{idx}")
+        if widget['front']:
+            widget['label'].config(image=widget['front'])
+            widget['revealed'] = True
+
+    def _reveal_center_front(self, idx):
+        if not (0 <= idx < len(self.center_widgets)):
+            return
+        widget = self.center_widgets[idx]
+        if not widget.get('front'):
+            widget['front'] = self._load_role_photo(self.center_roles[idx], (160, 240), f"center_{idx}")
+        if widget['front']:
+            widget['label'].config(image=widget['front'])
+            widget['revealed'] = True
 
     def export(self):
         if not self._last_result:

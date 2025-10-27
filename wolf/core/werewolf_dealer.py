@@ -26,6 +26,8 @@ class WerewolfDealer:
         "tanner": "tanner",
         "保镖": "bodyguard",
         "bodyguard": "bodyguard",
+        "化身幽灵": "doppelganger",
+        "doppelganger": "doppelganger",
     }
 
     """核心发牌引擎。
@@ -272,7 +274,7 @@ class WerewolfDealer:
 
     def get_night_steps(self) -> List[Dict]:
         """返回夜晚步骤列表，包含出现的角色及相关玩家（基于初始身份）。"""
-        order = ["werewolf", "minion", "mason", "seer", "robber", "troublemaker", "drunk", "insomniac"]
+        order = ["doppelganger", "werewolf", "minion", "mason", "seer", "robber", "troublemaker", "drunk", "insomniac"]
         steps = []
         for role in order:
             players = self.get_role_indices(role, use_initial=True)
@@ -282,6 +284,138 @@ class WerewolfDealer:
             if players:
                 steps.append({"role": role, "players": players})
         return steps
+
+    # ---- 新增：一键夜晚自动流程（默认策略，必要时可传入 choices 指定目标） ----
+    def run_night_automation(self, choices: Dict = None) -> List[Dict]:
+        """
+        按顺序自动执行夜晚行动；不要求用户逐步操作，使用默认/随机策略。
+        可通过 choices 指定目标，例如：
+            {
+              "robber": {robber_index: target_index},
+              "troublemaker": {tm_index: (a_index, b_index)},
+              "drunk": {drunk_index: center_index},
+              "seer": {seer_index: {"type": "player", "target": idx} 或 {"type": "center", "targets": [i,j]}}
+            }
+        返回：行动日志列表。
+        说明：化身幽灵（doppelganger）暂未实现具体复制规则，仅记录占位日志。
+        """
+        if not hasattr(self, "session"):
+            raise RuntimeError("游戏尚未开始")
+        s = self.session
+        n = s["player_count"]
+        log: List[Dict] = []
+        rnd = random.Random()
+        if choices is None:
+            choices = {}
+
+        def rand_other(i):
+            cand = [x for x in range(n) if x != i]
+            return rnd.choice(cand) if cand else None
+
+        def rand_two_excl(exclude: List[int]):
+            cand = [x for x in range(n) if x not in exclude]
+            if len(cand) < 2:
+                return None
+            a = rnd.choice(cand)
+            cand.remove(a)
+            b = rnd.choice(cand)
+            return a, b
+
+        # 以初始身份确定出手人；卡牌交换在 s["player_cards"] 上进行
+        steps = self.get_night_steps()
+        for step in steps:
+            role = step["role"]
+            players = step["players"]
+            if role == "doppelganger":
+                # TODO: 需要确认化身幽灵的复制与后续行动规则
+                log.append({"role": role, "players": players, "note": "未实现，需规则确认"})
+                continue
+
+            if role == "werewolf":
+                # 多狼互相确认；若仅 1 狼，则可查看一张中央牌
+                wolves = players
+                if len(wolves) == 1 and s["center_cards"]:
+                    ci = rnd.randrange(0, len(s["center_cards"]))
+                    seen = s["center_cards"][ci]
+                    log.append({"role": role, "wolves": wolves, "center_peek": ci, "card": seen})
+                else:
+                    log.append({"role": role, "wolves": wolves})
+                continue
+
+            if role == "minion":
+                wolves_now = self.get_role_indices("werewolf", use_initial=True)
+                log.append({"role": role, "minions": players, "wolves_seen": wolves_now})
+                continue
+
+            if role == "mason":
+                # 两位守夜人互认
+                log.append({"role": role, "masons": players})
+                continue
+
+            if role == "seer":
+                for si in players:
+                    choice = (choices.get("seer", {}) or {}).get(si)
+                    if choice and choice.get("type") == "player":
+                        tgt = choice.get("target")
+                        card = s["player_cards"][tgt] if 0 <= tgt < n else None
+                        log.append({"role": role, "seer": si, "peek_player": tgt, "card": card})
+                    elif choice and choice.get("type") == "center":
+                        idxs = choice.get("targets", [])[:2]
+                        cards = [s["center_cards"][k] for k in idxs if 0 <= k < len(s["center_cards"])][:2]
+                        log.append({"role": role, "seer": si, "peek_center": idxs, "cards": cards})
+                    else:
+                        # 默认：查看两张中央
+                        idxs = list(range(len(s["center_cards"])));
+                        rnd.shuffle(idxs)
+                        idxs = idxs[:2]
+                        cards = [s["center_cards"][k] for k in idxs]
+                        log.append({"role": role, "seer": si, "peek_center": idxs, "cards": cards})
+                continue
+
+            if role == "robber":
+                # 与一名其他玩家交换；然后查看新牌（这里仅记录日志）
+                for ri in players:
+                    tgt = (choices.get("robber", {}) or {}).get(ri)
+                    if tgt is None:
+                        tgt = rand_other(ri)
+                    if tgt is None or not (0 <= tgt < n) or tgt == ri:
+                        log.append({"role": role, "robber": ri, "note": "未找到可交换目标"})
+                        continue
+                    s["player_cards"][ri], s["player_cards"][tgt] = s["player_cards"][tgt], s["player_cards"][ri]
+                    log.append({"role": role, "robber": ri, "swapped_with": tgt, "new_card": s["player_cards"][ri]})
+                continue
+
+            if role == "troublemaker":
+                for ti in players:
+                    pair = (choices.get("troublemaker", {}) or {}).get(ti)
+                    if not pair:
+                        pair = rand_two_excl([ti])
+                    if not pair:
+                        log.append({"role": role, "troublemaker": ti, "note": "可交换目标不足"})
+                        continue
+                    a, b = pair
+                    s["player_cards"][a], s["player_cards"][b] = s["player_cards"][b], s["player_cards"][a]
+                    log.append({"role": role, "troublemaker": ti, "swapped": (a, b)})
+                continue
+
+            if role == "drunk":
+                for di in players:
+                    ci = (choices.get("drunk", {}) or {}).get(di)
+                    if ci is None:
+                        ci = rnd.randrange(0, len(s["center_cards"])) if s["center_cards"] else None
+                    if ci is None or not (0 <= ci < len(s["center_cards"])):
+                        log.append({"role": role, "drunk": di, "note": "中央牌不存在"})
+                        continue
+                    s["player_cards"][di], s["center_cards"][ci] = s["center_cards"][ci], s["player_cards"][di]
+                    log.append({"role": role, "drunk": di, "center_index": ci})
+                continue
+
+            if role == "insomniac":
+                for ii in players:
+                    log.append({"role": role, "insomniac": ii, "final_card": s["player_cards"][ii]})
+                continue
+
+        return log
 
     def reveal_player_card(self, player_index: int) -> str:
         if not hasattr(self, "session"):
