@@ -14,6 +14,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.core.audio import SoundLoader
+from kivy.factory import Factory
 
 # Ensure core path
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -94,9 +95,9 @@ class OneNightApp(App):
         self.manager = self.root = RootManager()
         self.dealer = WerewolfDealer()
         self.available_roles = self.load_available_roles()
-        self.current_role_pool: List[str] = []
-        self.player_roles: List[str] = []
-        self.center_roles: List[str] = []
+        self.current_role_pool = []
+        self.player_roles = []
+        self.center_roles = []
         self.player_count = 4
         self.view_index = 0
         self.viewed = []
@@ -110,6 +111,13 @@ class OneNightApp(App):
         self.night_finished = False
         self.result_decided = False
 
+        # Add screens defined in KV
+        try:
+            self.manager.add_widget(Factory.RoleSelectScreen())
+            self.manager.add_widget(Factory.ViewingScreen())
+            self.manager.add_widget(Factory.BoardScreen())
+        except Exception:
+            pass
         self.init_role_select_screen()
         return self.manager
 
