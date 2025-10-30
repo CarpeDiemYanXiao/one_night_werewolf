@@ -899,10 +899,10 @@ class OneNightApp(App):
             name = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(seen_role), seen_role)
             label = self._current_role_label('insomniac', dg_indices) or action_label
             self._log_action(f"{label}查看当前身份：{name}")
-            self.manager.get_screen('board').ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
             return
         # werewolf/minion/mason 或其它无行动：直接允许继续
-        self.manager.get_screen('board').ids.night_continue.disabled = False
+        self._set_continue_enabled(True)
 
     # ---- Role modes ----
     def _seer_mode_center(self):
@@ -917,7 +917,7 @@ class OneNightApp(App):
                     name = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(role), role)
                     parts.append(f"中央{idx+1}（{name}）")
                 self._log_action(f"{label}查看中央：{'，'.join(parts)}")
-            self.manager.get_screen('board').ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
         self._night_focus_centers(peek_count=2, on_done=done, on_reveal=on_reveal)
 
     def _seer_mode_player(self):
@@ -932,12 +932,12 @@ class OneNightApp(App):
             actions.add_widget(Label(text=f'玩家{i+1}：{name}', size_hint_y=None, height='28dp'))
             label = self._current_role_label('seer') or '预言家'
             self._log_action(f"{label}查看玩家{i+1}：{name}")
-            self.manager.get_screen('board').ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
         self._night_focus_players(list(range(self.player_count)), on_pick)
 
     def _robber_mode(self, robber_idx):
         if robber_idx is None:
-            self.manager.get_screen('board').ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
             return
         others = [i for i in range(self.player_count) if i != robber_idx]
         def on_pick(tgt):
@@ -960,12 +960,12 @@ class OneNightApp(App):
             new_name = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(new_role), new_role)
             label = self._current_role_label('robber', [robber_idx]) or f'强盗（玩家{robber_idx+1}）'
             self._log_action(f"{label}与 玩家{tgt+1} 交换，现在获得 {new_name}")
-            self.manager.get_screen('board').ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
         self._night_focus_players(others, on_pick)
 
     def _troublemaker_mode(self, tm_idx):
         if tm_idx is None:
-            self.manager.get_screen('board').ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
             return
         sel = []
         def on_pick(i):
@@ -983,12 +983,12 @@ class OneNightApp(App):
                 self._sync_from_session_android()
                 label = self._current_role_label('troublemaker', [tm_idx]) or f'捣蛋鬼（玩家{tm_idx+1}）'
                 self._log_action(f"{label}交换了 玩家{a+1} 与 玩家{b+1}")
-                self.manager.get_screen('board').ids.night_continue.disabled = False
+                self._set_continue_enabled(True)
         self._night_focus_players([i for i in range(self.player_count) if i != tm_idx], on_pick)
 
     def _drunk_mode(self, drunk_idx):
         if drunk_idx is None:
-            self.manager.get_screen('board').ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
             return
         actions = self.manager.get_screen('board').ids.night_actions
         actions.clear_widgets()
@@ -1003,7 +1003,7 @@ class OneNightApp(App):
                     self._sync_from_session_android()
                     label = self._current_role_label('drunk', [drunk_idx]) or f'酒鬼（玩家{drunk_idx+1}）'
                     self._log_action(f"{label}与 中央{idx+1} 交换")
-                    self.manager.get_screen('board').ids.night_continue.disabled = False
+                    self._set_continue_enabled(True)
                 return handler
             btn.bind(on_release=bind_click())
             actions.add_widget(btn)
