@@ -2,10 +2,14 @@ import os
 import sys
 import math
 import random
+import threading
+import importlib
+import time
 from collections import Counter
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
+# 延迟导入 playsound，避免在未安装时触发静态检查告警
 
 
 # 当直接以脚本运行时（python wolf/gui/main_window.py），确保项目的 `wolf` 目录在 sys.path 中
@@ -42,6 +46,22 @@ class WerewolfApp:
         self.dealer = WerewolfDealer()
         # 图片缓存，避免 PhotoImage 被 GC
         self._img_cache = {}
+        # 音频目录（优先 PyInstaller 解包路径，再回退到源码相对路径）
+        try:
+            bundle_base = getattr(sys, '_MEIPASS', None)
+        except Exception:
+            bundle_base = None
+        sd = None
+        if bundle_base:
+            cand = os.path.join(bundle_base, 'sounds')
+            if os.path.isdir(cand):
+                sd = cand
+        if not sd:
+            try:
+                sd = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'sounds'))
+            except Exception:
+                sd = None
+        self.sounds_dir = sd
 
         # 背景图相关
         self._bg_label = None
@@ -92,9 +112,7 @@ class WerewolfApp:
         self.deal_btn = ttk.Button(top, text="随机发牌", command=self.deal)
         self.deal_btn.pack(side=tk.LEFT, padx=6)
 
-        # 导出结果按钮
-        self.export_btn = ttk.Button(top, text="导出结果", command=self.export, state=tk.DISABLED)
-        self.export_btn.pack(side=tk.LEFT, padx=6)
+    # （已移除导出结果按钮）
 
         self.cards_frame = ttk.Frame(frm)
         self.cards_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -105,6 +123,245 @@ class WerewolfApp:
             pass
 
         self._last_result = None
+        # 夜晚流程/结果状态
+        self.night_started = False
+        self.night_finished = False
+        self.result_decided = False
+        self._night_after_id = None  # Tk after 计时器 id，便于取消
+        # 夜晚音频与继续按钮控制
+        self._wake_in_progress = False
+
+    # === 声音播放辅助 ===
+    def _get_role_sound_file(self, role: str, event: str):
+        """根据角色与事件（wake/close）返回音频文件的绝对路径，若不存在则返回 None。"""
+        if not self.sounds_dir:
+            return None
+        role_key = (role or '').lower()
+        mapping = {
+            'seer': {'wake': 'seer_wake.MP3', 'close': 'seer_close.MP3'},
+            'robber': {'wake': 'robber_wake.MP3', 'close': 'robber_close.MP3'},
+            'troublemaker': {'wake': 'troublemaker_wake.MP3', 'close': 'troublemaker_close.MP3'},
+            'drunk': {'wake': 'drunk_wake.MP3', 'close': 'drunk_close.MP3'},
+            'insomniac': {'wake': 'insomniac_wake.MP3', 'close': 'insomniac_close.MP3'},
+            'mason': {'wake': 'mason_wake.MP3', 'close': 'mason_close.MP3'},
+            'minion': {'wake': 'minion_wake.MP3', 'close': 'minion_close.MP3'},
+            'doppelganger': {'wake': 'doppelganger_wake.MP3', 'close': 'doppelganger_close.MP3'},
+            # 若后续补充狼人音频，可放开下方映射
+            'werewolf': {'wake': 'werewolf_wake.MP3', 'close': 'werewolf_close.MP3'},
+        }
+        files = mapping.get(role_key)
+        if not files:
+            return None
+        filename = files.get(event)
+        if not filename:
+            return None
+        path = os.path.join(self.sounds_dir, filename)
+        return path if os.path.exists(path) else None
+
+    def _find_sound_file(self, name: str):
+        """查找通用音频文件，支持 .MP3/.mp3 扩展名。"""
+        if not self.sounds_dir:
+            return None
+        for ext in ('.MP3', '.mp3'):
+            p = os.path.join(self.sounds_dir, f"{name}{ext}")
+            if os.path.exists(p):
+                return p
+        return None
+
+    def _play_general_sound(self, name: str, on_complete=None):
+        path = None
+        try:
+            path = self._find_sound_file(name)
+        except Exception:
+            path = None
+        if path:
+            self._play_sound_file(path, on_complete=on_complete)
+        else:
+            if callable(on_complete):
+                try:
+                    self.root.after(0, on_complete)
+                except Exception:
+                    pass
+
+    def _play_sound_file(self, filepath: str, on_complete=None):
+        """异步播放音频文件，播放完成后回到主线程执行回调。"""
+        if not filepath or not os.path.exists(filepath):
+            # 无法播放则直接回调
+            if callable(on_complete):
+                try:
+                    self.root.after(0, on_complete)
+                except Exception:
+                    pass
+            return
+
+        def _init_audio_backend():
+            # 选择更顺滑的后端：优先 pygame，其次 playsound
+            if getattr(self, '_audio_backend', None):
+                return
+            backend = 'none'
+            backend_obj = None
+            try:
+                mod = importlib.import_module('pygame')
+                # 尝试初始化混音器
+                try:
+                    mod.mixer.init()
+                    backend = 'pygame'
+                    backend_obj = mod
+                except Exception:
+                    backend = 'none'
+                    backend_obj = None
+            except Exception:
+                mod = None
+            if backend == 'none':
+                try:
+                    mod2 = importlib.import_module('playsound')
+                    backend = 'playsound'
+                    backend_obj = mod2
+                except Exception:
+                    backend = 'none'
+                    backend_obj = None
+            self._audio_backend = backend
+            self._audio_obj = backend_obj
+
+        def _worker():
+            try:
+                _init_audio_backend()
+                backend = getattr(self, '_audio_backend', 'none')
+                obj = getattr(self, '_audio_obj', None)
+                if backend == 'pygame' and obj is not None:
+                    try:
+                        # 使用 pygame 播放，通常比 playsound 更顺滑
+                        obj.mixer.music.load(filepath)
+                        obj.mixer.music.play()
+                        # 阻塞等待播放结束（在工作线程中，不阻塞 UI）
+                        while obj.mixer.music.get_busy():
+                            time.sleep(0.05)
+                    except Exception:
+                        pass
+                elif backend == 'playsound' and obj is not None:
+                    try:
+                        ps = getattr(obj, 'playsound', None)
+                        if callable(ps):
+                            ps(filepath, block=True)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            finally:
+                if callable(on_complete):
+                    try:
+                        self.root.after(0, on_complete)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _play_role_wake(self, role: str):
+        """播放某角色唤醒音频（若有）。"""
+        try:
+            path = self._get_role_sound_file(role, 'wake')
+        except Exception:
+            path = None
+        if path:
+            # 开始唤醒音，期间禁用“继续”按钮，结束后统一放开
+            self._wake_in_progress = True
+            # 让 UI 先完成本次布局刷新，再开始播放，减少初次渲染与音频同时抢占资源导致的卡顿
+            try:
+                self.root.after(150, lambda p=path: self._play_sound_file(p, on_complete=self._on_wake_complete))
+            except Exception:
+                self._play_sound_file(path, on_complete=self._on_wake_complete)
+        else:
+            # 没有音频，视为已完成
+            self._wake_in_progress = False
+            try:
+                self._on_wake_complete()
+            except Exception:
+                pass
+
+    def _on_wake_complete(self):
+        """唤醒音完成，允许点击‘继续’按钮。"""
+        self._wake_in_progress = False
+        self._refresh_continue_buttons()
+
+    def _can_continue_now(self) -> bool:
+        """根据唤醒音状态与步骤约束判断是否可继续。"""
+        if self._wake_in_progress:
+            return False
+        st = getattr(self, 'night_action_state', {}) or {}
+        # 独狼必须先看一张中央
+        if st.get('require_wolf_peek') and not st.get('wolf_peeked'):
+            return False
+        # 强盗必须先完成一次交换
+        if st.get('require_robber_swap') and not st.get('robber_swapped'):
+            return False
+        return True
+
+    def _refresh_continue_buttons(self):
+        btns = None
+        try:
+            btns = self.night_action_state.get('continue_buttons')
+        except Exception:
+            btns = None
+        if not btns:
+            return
+        can = self._can_continue_now()
+        for b in btns:
+            try:
+                b.state(["!disabled"] if can else ["disabled"])
+            except Exception:
+                pass
+
+    def _create_continue_button(self, text: str = "继续"):
+        """创建一个‘继续’按钮，若唤醒音未结束则默认禁用，结束后自动启用。"""
+        btn = ttk.Button(self.night_buttons_frame, text=text, command=self._complete_role_and_advance)
+        # 记录以便唤醒音结束后统一启用
+        try:
+            lst = self.night_action_state.get('continue_buttons')
+            if not lst:
+                self.night_action_state['continue_buttons'] = []
+            self.night_action_state['continue_buttons'].append(btn)
+        except Exception:
+            pass
+        btn.pack(side=tk.RIGHT)
+        # 初始化按钮可用状态
+        try:
+            self._refresh_continue_buttons()
+        except Exception:
+            pass
+        return btn
+
+    def _disable_night_buttons(self):
+        try:
+            for w in self.night_buttons_frame.winfo_children():
+                try:
+                    w.state(["disabled"])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _finish_role_and_then(self, callback):
+        """播放当前活动角色的闭眼音频（若有），完成后执行回调。"""
+        self._disable_night_buttons()
+        active_role = getattr(self, 'night_active_sound_role', None) or getattr(self, 'night_current_role', None)
+        try:
+            path = self._get_role_sound_file(active_role, 'close')
+        except Exception:
+            path = None
+        if path:
+            self._play_sound_file(path, on_complete=callback)
+        else:
+            if callable(callback):
+                callback()
+
+    def _complete_role_and_advance(self):
+        """当前角色完成：先播闭眼音频（若有），再进入下一步。"""
+        def go_next():
+            try:
+                self._next_night_step()
+            except Exception:
+                pass
+        self._finish_role_and_then(go_next)
 
     def _load_available_roles(self):
         """加载可选角色，返回 [{'display': str, 'internal': str}, ...]，排除狼人/保镖/background。"""
@@ -220,7 +477,8 @@ class WerewolfApp:
             ):
                 var.set(not var.get())
                 if var.get():
-                    fr.configure(relief=tk.SOLID, bd=3, bg="#DCFCE7")
+                    # 保持边框宽度不变，避免触发布局抖动
+                    fr.configure(relief=tk.SOLID, bd=2, bg="#DCFCE7")
                     cont.configure(bg="#DCFCE7")
                     img_label.configure(bg="#DCFCE7")
                     txt_label.configure(bg="#DCFCE7")
@@ -409,11 +667,6 @@ class WerewolfApp:
             return
 
         self._last_result = (res['player_cards'], res['center_cards'])
-        # 开始后允许导出
-        try:
-            self.export_btn['state'] = tk.NORMAL
-        except Exception:
-            pass
         self.start_sequential_viewing(res['player_cards'], res['center_cards'])
         self._hide_role_selection()
         self._switch_start_to_restart()
@@ -447,6 +700,17 @@ class WerewolfApp:
                 self.focus_frame.destroy()
         except Exception:
             pass
+        # 取消夜晚计时器并重置标志
+        try:
+            if getattr(self, '_night_after_id', None):
+                self.root.after_cancel(self._night_after_id)
+        except Exception:
+            pass
+        self._night_after_id = None
+        self.night_started = False
+        self.night_finished = False
+        self.result_decided = False
+        self.result_text = ""
         # 清空牌桌与查看视图
         try:
             for w in self.cards_frame.winfo_children():
@@ -465,14 +729,50 @@ class WerewolfApp:
             self.dealer.session = {}
         except Exception:
             pass
-        # 重置导出按钮
-        try:
-            self.export_btn['state'] = tk.DISABLED
-        except Exception:
-            pass
+        # （已移除导出按钮状态切换）
         # 恢复角色选择区，按钮切回“开始局”
         self._show_role_selection()
         self._switch_restart_to_start()
+
+    def _evaluate_and_display_result(self, target_idx: int):
+        """根据翻开的目标玩家判断胜负并在界面显示简要结果。
+        简化规则：
+        - 若被翻开的玩家是 狼人，则好人阵营胜利（处决狼人）。
+        - 否则：若场上仍有狼人，视为狼人阵营胜利；若场上无狼人，视为好人阵营胜利。
+        """
+        try:
+            self._sync_from_session()
+        except Exception:
+            pass
+        try:
+            role_clicked = self.player_roles[target_idx]
+        except Exception:
+            role_clicked = None
+        clicked_norm = WerewolfDealer.normalize_role(role_clicked) if role_clicked else None
+        has_wolf = False
+        try:
+            has_wolf = any(WerewolfDealer.normalize_role(r) == 'werewolf' for r in self.player_roles)
+        except Exception:
+            has_wolf = False
+
+        if clicked_norm == 'werewolf':
+            result = "本局结果：好人阵营胜利（处决了狼人）。"
+        else:
+            result = "本局结果：狼人阵营胜利（未处决狼人）。" if has_wolf else "本局结果：好人阵营胜利（场上无狼人）。"
+
+        name_cn = self._get_role_display_name(role_clicked) if role_clicked else "未知"
+        detail = f"你翻开的是 玩家{target_idx+1}（{name_cn}）。\n{result}"
+        self.result_text = result
+        self.result_decided = True
+        # 更新控制区提示
+        try:
+            self._render_night_controls()
+        except Exception:
+            pass
+        try:
+            messagebox.showinfo("结算", detail)
+        except Exception:
+            pass
 
     def display_cards(self, player_roles, center):
         """把给定的玩家牌和中央牌显示在界面上（与原有 deal 复用逻辑）。"""
@@ -520,21 +820,31 @@ class WerewolfApp:
                 except Exception:
                     pass
             img_label.pack(side=tk.TOP, pady=4)
-        # 可导出
-        try:
-            self.export_btn['state'] = tk.NORMAL
-        except Exception:
-            pass
+        # （已移除导出按钮状态切换）
 
     # ---- 新增: 序列查看与夜晚交互流程 ----
     def _roles_dir(self):
-        # 返回资源图片目录（优先 wolf/resources/roles）
-        p = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'resources', 'roles'))
-        if os.path.isdir(p):
-            return p
-        # fallback to repo images
-        p2 = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images', 'roles'))
-        return p2
+        # 返回资源图片目录，优先 PyInstaller 解包路径
+        try:
+            bundle_base = getattr(sys, '_MEIPASS', None)
+        except Exception:
+            bundle_base = None
+        candidates = []
+        if bundle_base:
+            candidates.extend([
+                os.path.join(bundle_base, 'resources', 'roles'),
+                os.path.join(bundle_base, 'images', 'roles'),
+            ])
+        # 源码路径候选
+        candidates.extend([
+            os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'resources', 'roles')),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images', 'roles')),
+        ])
+        for p in candidates:
+            if os.path.isdir(p):
+                return p
+        # 最后回退到源码下的 images/roles，即使不存在
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images', 'roles'))
 
     def _find_image_file(self, role):
         # 支持 png/jpg
@@ -568,11 +878,20 @@ class WerewolfApp:
             self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
             self._bg_label.lower()
 
-        def on_resize(_e=None):
+        # 背景缩放防抖 + 跳变检测，避免频繁重采样造成卡顿
+        self._bg_resize_after_id = None
+        self._bg_last_size = (-1, -1)
+
+        def _do_bg_resize():
+            self._bg_resize_after_id = None
             if not self._bg_img_orig:
                 return
             w = max(1, self.root.winfo_width())
             h = max(1, self.root.winfo_height())
+            # 尺寸未变化则跳过
+            if self._bg_last_size == (w, h):
+                return
+            self._bg_last_size = (w, h)
             ow, oh = self._bg_img_orig.size
             # cover: 按比例放大以覆盖窗口
             scale = max(w / ow, h / oh)
@@ -591,9 +910,22 @@ class WerewolfApp:
             self._bg_img_tk = ImageTk.PhotoImage(cropped)
             self._bg_label.configure(image=self._bg_img_tk)
 
+        def on_resize(_e=None):
+            # 取消上一次计划并在短延时后执行，合并短时间内的多次 Configure 事件
+            try:
+                if self._bg_resize_after_id:
+                    self.root.after_cancel(self._bg_resize_after_id)
+            except Exception:
+                pass
+            try:
+                self._bg_resize_after_id = self.root.after(120, _do_bg_resize)
+            except Exception:
+                # Fallback: 直接执行
+                _do_bg_resize()
+
         # 首次渲染和大小改变时更新
         self.root.bind('<Configure>', on_resize)
-        self.root.after(60, on_resize)
+        self.root.after(60, _do_bg_resize)
 
     def _load_placeholder_images(self):
         # 加载 card_back(140x210) 与 center_back(160x240)
@@ -785,8 +1117,29 @@ class WerewolfApp:
         controls = ttk.Frame(container, padding=6)
         controls.pack(fill=tk.X)
         self.controls_frame = controls
-        ttk.Button(controls, text="开始夜晚", command=self._start_guided_night).pack(side=tk.LEFT, padx=(0,8))
+        # 渲染夜晚控制区（按钮或提示文本）
+        self._render_night_controls()
         self._populate_board_widgets()
+
+    def _render_night_controls(self):
+        # 清空并根据状态渲染控制区域
+        for w in self.controls_frame.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        if not getattr(self, 'night_started', False):
+            # 首次未开始：提供开始按钮
+            self.start_night_btn = ttk.Button(self.controls_frame, text="开始夜晚", command=self._start_guided_night)
+            self.start_night_btn.pack(side=tk.LEFT, padx=(0, 8))
+        else:
+            # 已开始过夜晚：显示状态提示
+            text = "夜晚进行中，请根据提示完成行动。" if getattr(self, 'night_mode', False) else (
+                "夜晚已结束：点击一名玩家翻牌判断胜负。" if getattr(self, 'night_finished', False) and not getattr(self, 'result_decided', False) else
+                (getattr(self, 'result_text', "夜晚已开始。"))
+            )
+            self.night_status_lbl = ttk.Label(self.controls_frame, text=text)
+            self.night_status_lbl.pack(side=tk.LEFT)
 
     def _populate_board_widgets(self):
         for w in self.player_grid_frame.winfo_children():
@@ -888,8 +1241,22 @@ class WerewolfApp:
 
     # --- 夜晚引导：点击包装 ---
     def _on_board_player_click(self, idx, event=None):
+        # 夜晚进行中：交给夜晚处理
         if getattr(self, 'night_mode', False):
             self._night_handle_player_click(idx)
+            return
+        # 夜晚已结束且尚未判定结果：点击视为处决翻牌并判断胜负
+        if getattr(self, 'night_finished', False) and not getattr(self, 'result_decided', False):
+            # 翻开该玩家牌
+            if 0 <= idx < len(getattr(self, 'board_player_widgets', [])):
+                widget = self.board_player_widgets[idx]
+                if not widget.get("front"):
+                    widget["front"] = self._load_role_photo(self.player_roles[idx], (140, 210), f"board_player_{idx}")
+                if widget.get("front"):
+                    widget["label"].config(image=widget["front"])
+                    widget["revealed"] = True
+            # 判定并显示结果
+            self._evaluate_and_display_result(idx)
             return
         self._toggle_player_card(idx)
 
@@ -1010,6 +1377,19 @@ class WerewolfApp:
     # === 引导式夜晚 ===
     def _start_guided_night(self):
         self.night_mode = True
+        self.night_started = True
+        self.night_finished = False
+        self.result_decided = False
+        # 隐藏“开始夜晚”按钮，改为状态提示
+        try:
+            if hasattr(self, 'start_night_btn') and self.start_night_btn and self.start_night_btn.winfo_exists():
+                self.start_night_btn.pack_forget()
+        except Exception:
+            pass
+        try:
+            self._render_night_controls()
+        except Exception:
+            pass
         self.night_steps = self.dealer.get_night_steps()
         self.night_step_idx = 0
         # 构建夜晚面板
@@ -1024,7 +1404,11 @@ class WerewolfApp:
         self.night_countdown_lbl.pack(side=tk.RIGHT)
         self.night_buttons_frame = ttk.Frame(self.night_panel)
         self.night_buttons_frame.pack(fill=tk.X, pady=(6,0))
-        self._run_night_step()
+        # 播放夜晚开始提示，结束后再启动第一步
+        try:
+            self._play_general_sound('night_start', on_complete=self._run_night_step)
+        except Exception:
+            self._run_night_step()
 
     def _run_night_step(self):
         # 清理上一轮的动态按钮
@@ -1032,22 +1416,50 @@ class WerewolfApp:
             w.destroy()
         self.night_click_mode = None
         self.night_action_state = {}
-        # 倒计时 15 秒
+        # 倒计时 15 秒（重置并取消旧的计时器）
+        try:
+            if getattr(self, '_night_after_id', None):
+                self.root.after_cancel(self._night_after_id)
+        except Exception:
+            pass
+        self._night_after_id = None
         self.night_remaining = 15
         self._night_tick()
 
         if self.night_step_idx >= len(self.night_steps):
             self.night_text.config(text="夜晚结束。")
-            ttk.Button(self.night_buttons_frame, text="结束夜晚", command=self._end_guided_night).pack(side=tk.LEFT)
+            end_btn = ttk.Button(self.night_buttons_frame, text="结束夜晚", command=self._end_guided_night)
+            try:
+                end_btn.state(["disabled"])  # 夜晚结束语音未播完前不允许点击
+            except Exception:
+                pass
+            end_btn.pack(side=tk.LEFT)
+            # 播放夜晚结束提示音，结束后放开按钮
+            def _enable_end():
+                try:
+                    end_btn.state(["!disabled"])
+                except Exception:
+                    pass
+            try:
+                self._play_general_sound('night_over', on_complete=_enable_end)
+            except Exception:
+                _enable_end()
             return
 
         step = self.night_steps[self.night_step_idx]
         role = step.get('role')
         players = step.get('players', [])
         self.night_current_role = role
+        # 当前活动角色用于声音播报
+        self.night_active_sound_role = role
 
         # 进入聚焦模式，仅呈现与该角色相关的卡片
         self._enter_focus_mode()
+        # 播放唤醒语音（若有）
+        try:
+            self._play_role_wake(self.night_active_sound_role)
+        except Exception:
+            pass
 
         if role == 'doppelganger':
             # 化身幽灵：选择一名其他玩家，查看并复制其角色
@@ -1065,18 +1477,21 @@ class WerewolfApp:
         elif role == 'werewolf':
             if len(players) == 1:
                 self.night_text.config(text="狼人：你为独狼，可查看中央任意一张牌。点击一张中央牌后仅展示该牌，随后点击继续。")
-                # 只显示中央三张
-                self._focus_show_centers([0,1,2], on_click=lambda j: self._focus_reveal_center_and_single(j))
-                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+                # 独狼需要先查看一张中央
+                self.night_action_state['require_wolf_peek'] = True
+                self.night_action_state['wolf_peeked'] = False
+                # 只显示中央三张（点击后标记已查看并刷新继续按钮）
+                self._focus_show_centers([0,1,2], on_click=lambda j: self._werewolf_single_peek(j))
+                self._create_continue_button()
             else:
                 self.night_text.config(text="狼人：请互相确认身份（提示模式）。")
-                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+                self._create_continue_button()
         elif role == 'minion':
             self.night_text.config(text="爪牙：请确认场上有哪些狼人（提示模式）。")
-            ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+            self._create_continue_button()
         elif role == 'mason':
             self.night_text.config(text="守夜人：两位守夜人请互相确认身份。")
-            ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+            self._create_continue_button()
         elif role == 'seer':
             self.night_text.config(text="预言家：请选择‘查看两张中央’或‘查看一名玩家’，完成操作后将出现‘继续’按钮。");
             # 先仅显示两种行动按钮，不显示“继续”；选择后隐藏行动按钮
@@ -1089,28 +1504,33 @@ class WerewolfApp:
             r_idx = players[0] if players else None
             if r_idx is not None:
                 self.night_action_state['robber'] = r_idx
+                # 强盗必须先完成一次交换
+                self.night_action_state['require_robber_swap'] = True
+                self.night_action_state['robber_swapped'] = False
                 self.night_text.config(text=f"强盗：玩家{r_idx+1}，请选择一名其他玩家交换。单击目标后，仅展示其牌面，然后点击继续。")
                 # 展示除强盗本人外的玩家卡
                 other_indices = [i for i in range(len(self.player_roles)) if i != r_idx]
                 self._focus_show_players(other_indices, on_click=lambda i: self._robber_choose_target_and_show(i))
-                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+                self._create_continue_button()
             else:
                 self.night_text.config(text="强盗：未找到强盗（提示模式）。")
-                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+                self._create_continue_button()
         elif role == 'troublemaker':
             t_idx = players[0] if players else None
             if t_idx is not None:
                 self.night_action_state['tm'] = t_idx
                 self.night_action_state['sel'] = []
-                self.night_text.config(text=f"捣蛋鬼：玩家{t_idx+1}，请选择两名玩家交换。再次点击已选卡可取消选择。点击‘确认交换’生效。")
-                self._focus_show_players(list(range(len(self.player_roles))), on_click=lambda i: self._tm_toggle_select(i), allow_self=True)
+                self.night_text.config(text=f"捣蛋鬼：玩家{t_idx+1}，请选择两名其他玩家交换。再次点击已选卡可取消选择。点击‘确认交换’生效。")
+                # 不能选择自己
+                other_indices = [i for i in range(len(self.player_roles)) if i != t_idx]
+                self._focus_show_players(other_indices, on_click=lambda i: self._tm_toggle_select(i), allow_self=False)
                 btn = ttk.Button(self.night_buttons_frame, text="确认交换", command=self._tm_confirm_swap)
                 btn.state(["disabled"])  # 至少两张才启用
                 self.night_action_state['tm_confirm_btn'] = btn
                 btn.pack(side=tk.LEFT)
             else:
                 self.night_text.config(text="捣蛋鬼：未找到捣蛋鬼（提示模式）。")
-                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+                self._create_continue_button()
         elif role == 'drunk':
             d_idx = players[0] if players else None
             if d_idx is not None:
@@ -1124,17 +1544,17 @@ class WerewolfApp:
                 btn.pack(side=tk.LEFT)
             else:
                 self.night_text.config(text="酒鬼：未找到酒鬼（提示模式）。")
-                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+                self._create_continue_button()
         elif role == 'insomniac':
             i_idx = players[0] if players else None
             if i_idx is not None:
                 self.night_text.config(text=f"失眠者：玩家{i_idx+1}，查看你当前的牌，然后点击继续。")
                 # 仅展示该玩家当前牌
                 self._focus_show_single_role(self.player_roles[i_idx], title=f"玩家{i_idx+1}")
-                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+                self._create_continue_button()
             else:
                 self.night_text.config(text="失眠者：未找到失眠者（提示模式）。")
-                ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step).pack(side=tk.RIGHT)
+                self._create_continue_button()
 
     def _night_set_mode(self, mode: str):
         self.night_click_mode = mode
@@ -1142,11 +1562,18 @@ class WerewolfApp:
     def _night_tick(self):
         if not getattr(self, 'night_mode', False):
             return
-        self.night_countdown_var.set(str(self.night_remaining))
+        try:
+            self.night_countdown_var.set(str(self.night_remaining))
+        except Exception:
+            pass
         if self.night_remaining <= 0:
             return
         self.night_remaining -= 1
-        self.root.after(1000, self._night_tick)
+        # 保存 after id，避免重复计时导致加速
+        try:
+            self._night_after_id = self.root.after(1000, self._night_tick)
+        except Exception:
+            self._night_after_id = None
 
     def _next_night_step(self):
         # 离开当前聚焦模块并刷新牌桌视图
@@ -1165,8 +1592,21 @@ class WerewolfApp:
 
     def _end_guided_night(self):
         self.night_mode = False
+        self.night_finished = True
+        # 取消计时器
+        try:
+            if getattr(self, '_night_after_id', None):
+                self.root.after_cancel(self._night_after_id)
+        except Exception:
+            pass
+        self._night_after_id = None
         if hasattr(self, 'night_panel') and self.night_panel and self.night_panel.winfo_exists():
             self.night_panel.destroy()
+        # 更新控制区提示
+        try:
+            self._render_night_controls()
+        except Exception:
+            pass
 
     # === 聚焦模式（每个角色独立模块的卡片视图） ===
     def _enter_focus_mode(self):
@@ -1233,6 +1673,8 @@ class WerewolfApp:
         row = len(self.focus_widgets) // 5
         col = len(self.focus_widgets) % 5
         frame.grid(row=row, column=col, padx=10, pady=10)
+        # 中央编号标题
+        ttk.Label(frame, text=f"中央{j+1}").pack(side=tk.TOP, pady=(4, 2))
         lbl = ttk.Label(frame)
         if reveal_role is None:
             img = self._img_cache.get('center_back') or self._img_cache.get('card_back')
@@ -1283,6 +1725,21 @@ class WerewolfApp:
         role = self.center_roles[j]
         self._focus_show_single_role(role, title=f"中央{j+1}")
 
+    def _werewolf_single_peek(self, j):
+        """独狼点击一张中央进行查看，并允许继续。"""
+        try:
+            self._focus_reveal_center_and_single(j)
+        except Exception:
+            pass
+        try:
+            self.night_action_state['wolf_peeked'] = True
+        except Exception:
+            pass
+        try:
+            self._refresh_continue_buttons()
+        except Exception:
+            pass
+
     # 化身幽灵：选择并展示目标玩家角色
     def _dg_select_target(self, target_idx):
         try:
@@ -1302,16 +1759,126 @@ class WerewolfApp:
                 pass
 
     def _dg_confirm_copy(self):
-        # 这里仅推进流程；若需落地到引擎，可在 dealer.session 记录复制信息
+        # 确认复制后，若复制角色有夜晚行动，立即执行对应行动模块
         try:
             btn = self.night_action_state.get('dg_confirm_btn')
             if btn:
                 btn.state(["disabled"])  # 防止重复点击
         except Exception:
             pass
-        # TODO: 可选：将复制信息写入引擎会话，供后续动作参考
-        # s = self.dealer.get_session(); s['doppelganger'] = {...}
-        self._next_night_step()
+        copied = self.night_action_state.get('dg_copied_role')
+        dg_indices = self.night_action_state.get('dg_player_indices') or []
+        if not copied or not dg_indices:
+            # 未选择目标则直接进入下一步
+            self._complete_role_and_advance()
+            return
+        # 可选：将复制信息写入引擎会话，供后续参考
+        try:
+            s = self.dealer.get_session() or {}
+            s['doppelganger'] = { 'players': dg_indices, 'copied_role': copied }
+            self.dealer.session = s
+        except Exception:
+            pass
+        # 先播放化身幽灵闭眼，再进入复制角色的行动
+        self._finish_role_and_then(lambda: self._run_dg_copied_role_action(copied, dg_indices))
+
+    def _run_dg_copied_role_action(self, copied_role, dg_indices):
+        """化身幽灵在复制后，立即执行所复制角色的夜晚行动（复用对应模块）。"""
+        try:
+            role = WerewolfDealer.normalize_role(copied_role)
+        except Exception:
+            role = str(copied_role) if copied_role else None
+        if not role:
+            self._complete_role_and_advance()
+            return
+        # 进入聚焦模式，渲染与该角色一致的 UI
+        self._enter_focus_mode()
+        # 文本提示
+        try:
+            cn = self._get_role_display_name(role)
+        except Exception:
+            cn = role
+        idx = dg_indices[0] if dg_indices else None
+
+        if role == 'seer':
+            try:
+                self.night_active_sound_role = role
+                self._play_role_wake(role)
+            except Exception:
+                pass
+            self.night_text.config(text=f"化身幽灵（{cn}）：请选择‘查看两张中央’或‘查看一名玩家’，完成操作后将出现‘继续’按钮。")
+            btn_center = ttk.Button(self.night_buttons_frame, text="查看两张中央", command=self._seer_mode_center)
+            btn_center.pack(side=tk.LEFT)
+            btn_player = ttk.Button(self.night_buttons_frame, text="查看一名玩家", command=self._seer_mode_player)
+            btn_player.pack(side=tk.LEFT)
+            self.night_action_state['seer_btns'] = [btn_center, btn_player]
+            return
+        if role == 'robber' and idx is not None:
+            try:
+                self.night_active_sound_role = role
+                self._play_role_wake(role)
+            except Exception:
+                pass
+            self.night_action_state['robber'] = idx
+            self.night_text.config(text=f"化身幽灵（强盗）：玩家{idx+1}，请选择一名其他玩家交换。单击目标后，仅展示其牌面，然后点击继续。")
+            other_indices = [i for i in range(len(self.player_roles)) if i != idx]
+            self._focus_show_players(other_indices, on_click=lambda i: self._robber_choose_target_and_show(i))
+            self._create_continue_button()
+            return
+        if role == 'troublemaker' and idx is not None:
+            try:
+                self.night_active_sound_role = role
+                self._play_role_wake(role)
+            except Exception:
+                pass
+            self.night_action_state['tm'] = idx
+            self.night_action_state['sel'] = []
+            self.night_text.config(text=f"化身幽灵（捣蛋鬼）：玩家{idx+1}，请选择两名玩家交换。再次点击已选卡可取消选择。点击‘确认交换’生效。")
+            self._focus_show_players(list(range(len(self.player_roles))), on_click=lambda i: self._tm_toggle_select(i), allow_self=True)
+            btn = ttk.Button(self.night_buttons_frame, text="确认交换", command=self._tm_confirm_swap)
+            btn.state(["disabled"])  # 至少两张才启用
+            self.night_action_state['tm_confirm_btn'] = btn
+            btn.pack(side=tk.LEFT)
+            return
+        if role == 'drunk' and idx is not None:
+            try:
+                self.night_active_sound_role = role
+                self._play_role_wake(role)
+            except Exception:
+                pass
+            self.night_action_state['drunk'] = idx
+            self.night_action_state['center_sel'] = None
+            self.night_text.config(text=f"化身幽灵（酒鬼）：玩家{idx+1}，请选择一张中央牌进行交换（不展示新牌）。选择后点击‘确认交换’。")
+            self._focus_show_centers([0,1,2], on_click=lambda j: self._drunk_select_center(j))
+            btn = ttk.Button(self.night_buttons_frame, text="确认交换", command=self._drunk_confirm_swap)
+            btn.state(["disabled"])  # 未选择中心牌前禁用
+            self.night_action_state['drunk_confirm_btn'] = btn
+            btn.pack(side=tk.LEFT)
+            return
+        if role == 'insomniac' and idx is not None:
+            try:
+                self.night_active_sound_role = role
+                self._play_role_wake(role)
+            except Exception:
+                pass
+            self.night_text.config(text=f"化身幽灵（失眠者）：玩家{idx+1}，查看你当前的牌，然后点击继续。")
+            self._focus_show_single_role(self.player_roles[idx], title=f"玩家{idx+1}")
+            self._create_continue_button()
+            return
+        if role == 'werewolf':
+            # 按需求：化身幽灵复制为狼人时不执行狼人操作，直接进入下一步
+            self._complete_role_and_advance()
+            return
+        if role == 'minion':
+            # 按需求：化身幽灵复制为爪牙时不执行爪牙操作，直接进入下一步
+            self._complete_role_and_advance()
+            return
+        if role == 'mason':
+            # 按需求：化身幽灵复制为守夜人时不执行守夜人操作，直接进入下一步
+            self._complete_role_and_advance()
+            return
+        # 其它无夜晚行动或未覆盖的角色：直接进入下一步
+        self._complete_role_and_advance()
 
     def _robber_choose_target_and_show(self, target_idx):
         r_idx = self.night_action_state.get('robber')
@@ -1333,6 +1900,12 @@ class WerewolfApp:
             self._focus_show_single_role(role_before, title=f"玩家{target_idx+1}")
         else:
             self._focus_clear()
+        # 标记强盗动作已完成，允许继续
+        try:
+            self.night_action_state['robber_swapped'] = True
+            self._refresh_continue_buttons()
+        except Exception:
+            pass
 
     def _tm_toggle_select(self, idx):
         sel = self.night_action_state.get('sel', [])
@@ -1399,7 +1972,7 @@ class WerewolfApp:
                 btn.state(["disabled"])  # 防止重复点击
         except Exception:
             pass
-        self._next_night_step()
+        self._complete_role_and_advance()
 
     def _drunk_select_center(self, j):
         # 高亮所选中心牌
@@ -1441,7 +2014,7 @@ class WerewolfApp:
                 btn.state(["disabled"])  # 防止重复点击
         except Exception:
             pass
-        self._next_night_step()
+        self._complete_role_and_advance()
 
     # 预言家子模式
     def _seer_mode_center(self):
@@ -1488,8 +2061,7 @@ class WerewolfApp:
         self.night_action_state['seer_center_remaining'] = remain
         # 当完成两张中央的查看后，才出现“继续”按钮
         if remain <= 0 and not self.night_action_state.get('seer_continue_btn'):
-            btnc = ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step)
-            btnc.pack(side=tk.RIGHT)
+            btnc = self._create_continue_button()
             self.night_action_state['seer_continue_btn'] = btnc
 
     def _seer_mode_player(self):
@@ -1520,8 +2092,7 @@ class WerewolfApp:
         self.night_action_state['seer_player_done'] = True
         # 完成查看后，出现“继续”按钮
         if not self.night_action_state.get('seer_continue_btn'):
-            btnc = ttk.Button(self.night_buttons_frame, text="继续", command=self._next_night_step)
-            btnc.pack(side=tk.RIGHT)
+            btnc = self._create_continue_button()
             self.night_action_state['seer_continue_btn'] = btnc
 
     # --- 夜晚点击处理 ---
