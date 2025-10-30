@@ -1,6 +1,10 @@
 #:kivy 2.1.0
+#:import ButtonBehavior kivy.uix.behaviors.button.ButtonBehavior
 
- 
+
+<ButtonImage@ButtonBehavior+Image>:
+    allow_stretch: True
+    keep_ratio: True
 
 <RoleSelectScreen@Screen>:
     name: 'role_select'
@@ -70,21 +74,12 @@
             text: '玩家1'
             size_hint_y: None
             height: dp(32)
-        Button:
+        ButtonImage:
             id: card_btn
-            text: ''
             size_hint_y: None
             height: dp(300)
             on_release: app.on_view_click()
-            background_normal: ''
-            background_down: ''
-            canvas.before:
-                Color:
-                    rgba: 1,1,1,1
-                Rectangle:
-                    pos: self.pos
-                    size: self.size
-                    source: app.current_card_image
+            source: app.current_card_image or ''
         Label:
             id: viewer_name
             text: ''
@@ -103,10 +98,6 @@
             size_hint_y: None
             height: dp(44)
             spacing: dp(8)
-            Button:
-                id: night_start_btn
-                text: '开始夜晚'
-                on_release: app.start_guided_night()
             Label:
                 id: night_status
                 text: ''
@@ -127,25 +118,6 @@
                 text: ''
                 size_hint_y: None
                 height: dp(22)
-            GridLayout:
-                id: night_actions
-                cols: 4
-                size_hint_y: None
-                height: self.minimum_height
-            BoxLayout:
-                id: night_buttons
-                size_hint_y: None
-                height: dp(44)
-                spacing: dp(8)
-                Button:
-                    id: night_continue
-                    text: '继续'
-                    on_release: app.night_continue()
-                    disabled: True
-                Button:
-                    id: night_end
-                    text: '结束夜晚'
-                    on_release: app.end_guided_night()
         GridLayout:
             id: players_grid
             cols: 4
@@ -157,12 +129,57 @@
             size_hint_y: None
             height: self.minimum_height
         BoxLayout:
+            id: night_action_container
+            orientation: 'vertical'
             size_hint_y: None
-            height: dp(48)
+            height: self.minimum_height
+            spacing: dp(6)
+            GridLayout:
+                id: night_actions
+                cols: 4
+                size_hint_y: None
+                height: self.minimum_height
+        BoxLayout:
+            id: board_controls
+            orientation: 'vertical'
+            size_hint_y: None
+            height: self.minimum_height
             spacing: dp(8)
-            Button:
-                text: '交换两名玩家角色'
-                on_release: app.swap_two_players()
-            Button:
-                text: '重新发牌（同池）'
-                on_release: app.redeal_same_pool()
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(8)
+                Button:
+                    id: night_start_btn
+                    text: '开始夜晚'
+                    size_hint_x: None
+                    width: dp(120)
+                    on_release: app.start_guided_night()
+                Widget:
+                    size_hint_x: 1
+                Button:
+                    text: '交换两名玩家角色'
+                    on_release: app.swap_two_players()
+                Button:
+                    text: '重新发牌（同池）'
+                    on_release: app.redeal_same_pool()
+            BoxLayout:
+                id: night_buttons
+                size_hint_y: None
+                height: dp(44)
+                spacing: dp(8)
+                Button:
+                    id: night_continue
+                    text: '继续'
+                    size_hint_x: None
+                    width: dp(120)
+                    on_release: app.night_continue()
+                    disabled: True
+                Button:
+                    id: night_end
+                    text: '结束夜晚'
+                    size_hint_x: None
+                    width: dp(120)
+                    on_release: app.end_guided_night()
+                Widget:
+                    size_hint_x: 1
