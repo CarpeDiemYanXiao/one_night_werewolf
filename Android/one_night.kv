@@ -1,0 +1,168 @@
+#:kivy 2.1.0
+
+<RootManager@ScreenManager>
+
+<RoleSelectScreen@Screen>:
+    name: 'role_select'
+    BoxLayout:
+        orientation: 'vertical'
+        padding: dp(12)
+        spacing: dp(8)
+        BoxLayout:
+            size_hint_y: None
+            height: dp(40)
+            Label:
+                text: '玩家人数'
+                size_hint_x: None
+                width: dp(80)
+            TextInput:
+                id: player_count
+                text: '4'
+                input_filter: 'int'
+                multiline: False
+        BoxLayout:
+            size_hint_y: None
+            height: dp(40)
+            Label:
+                text: '狼人数量'
+                size_hint_x: None
+                width: dp(80)
+            TextInput:
+                id: werewolf_count
+                text: '2'
+                input_filter: 'int'
+                multiline: False
+        Label:
+            text: '可选角色（多选，点击切换，守夜人自动两张）'
+            size_hint_y: None
+            height: dp(24)
+        ScrollView:
+            GridLayout:
+                id: roles_grid
+                cols: 3
+                size_hint_y: None
+                height: self.minimum_height
+                row_default_height: dp(36)
+        Label:
+            id: summary_lbl
+            text: ''
+            size_hint_y: None
+            height: dp(40)
+        BoxLayout:
+            size_hint_y: None
+            height: dp(48)
+            spacing: dp(8)
+            Button:
+                text: '开始局'
+                on_release: app.start_game_from_selection(player_count.text, werewolf_count.text)
+            Button:
+                text: '随机发牌（重洗同池）'
+                on_release: app.redeal_or_random(player_count.text)
+
+<ViewingScreen@Screen>:
+    name: 'viewing'
+    BoxLayout:
+        orientation: 'vertical'
+        padding: dp(12)
+        spacing: dp(8)
+        Label:
+            id: viewer_title
+            text: '玩家1'
+            size_hint_y: None
+            height: dp(32)
+        Button:
+            id: card_btn
+            text: ''
+            size_hint_y: None
+            height: dp(300)
+            on_release: app.on_view_click()
+            background_normal: ''
+            background_down: ''
+            canvas.before:
+                Color:
+                    rgba: 1,1,1,1
+                Rectangle:
+                    pos: self.pos
+                    size: self.size
+                    source: app.current_card_image
+        Label:
+            id: viewer_name
+            text: ''
+            size_hint_y: None
+            height: dp(28)
+
+<BoardScreen@Screen>:
+    name: 'board'
+    BoxLayout:
+        orientation: 'vertical'
+        padding: dp(12)
+        spacing: dp(8)
+        # 夜晚控制栏
+        BoxLayout:
+            id: night_toolbar
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(8)
+            Button:
+                id: night_start_btn
+                text: '开始夜晚'
+                on_release: app.start_guided_night()
+            Label:
+                id: night_status
+                text: ''
+        # 夜晚面板（引导区）
+        BoxLayout:
+            id: night_panel
+            orientation: 'vertical'
+            size_hint_y: None
+            height: self.minimum_height
+            spacing: dp(6)
+            Label:
+                id: night_text
+                text: ''
+                size_hint_y: None
+                height: dp(28)
+            Label:
+                id: night_countdown
+                text: ''
+                size_hint_y: None
+                height: dp(22)
+            GridLayout:
+                id: night_actions
+                cols: 4
+                size_hint_y: None
+                height: self.minimum_height
+            BoxLayout:
+                id: night_buttons
+                size_hint_y: None
+                height: dp(44)
+                spacing: dp(8)
+                Button:
+                    id: night_continue
+                    text: '继续'
+                    on_release: app.night_continue()
+                    disabled: True
+                Button:
+                    id: night_end
+                    text: '结束夜晚'
+                    on_release: app.end_guided_night()
+        GridLayout:
+            id: players_grid
+            cols: 4
+            size_hint_y: None
+            height: self.minimum_height
+        GridLayout:
+            id: center_grid
+            cols: 3
+            size_hint_y: None
+            height: self.minimum_height
+        BoxLayout:
+            size_hint_y: None
+            height: dp(48)
+            spacing: dp(8)
+            Button:
+                text: '交换两名玩家角色'
+                on_release: app.swap_two_players()
+            Button:
+                text: '重新发牌（同池）'
+                on_release: app.redeal_same_pool()
