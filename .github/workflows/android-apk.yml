@@ -1,0 +1,56 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - 'Android/**'
+      - 'wolf/**'
+      - 'images/**'
+      - '.github/workflows/android-apk.yml'
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip unzip openjdk-17-jdk
+
+      - name: Install buildozer and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install buildozer==1.5.0 cython virtualenv
+
+      - name: Prepare Android app sources
+        run: |
+          # Bundle core code into the Android package
+          rm -rf Android/wolf
+          rsync -a wolf/ Android/wolf/
+          # Bundle role images into Android/wolf/resources/roles (no Android/assets)
+          mkdir -p Android/wolf/resources/roles
+          if [ -d images/roles ]; then rsync -a images/roles/ Android/wolf/resources/roles/; fi
+          # Bundle sounds for BGM/SFX
+          if [ -d sounds ]; then rsync -a sounds/ Android/sounds/; fi
+
+      - name: Build APK (debug)
+        working-directory: Android
+        env:
+          BUILDOZER_WARN_ON_ROOT: '0'
+        run: |
+          buildozer -v android debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onenightwerewolf-debug-apk
+          path: Android/bin/*.apk
