@@ -47,28 +47,6 @@ class WerewolfDealer:
             # 提供最小内置默认规则以便测试与开发
             self.rules = self._default_rules()
 
-    def _default_rules(self) -> Dict:
-        # 内置简单规则，保证 4~9 的基本配置
-        return {
-            "4": {
-                "入门": ["狼人","狼人","预言家","强盗","捣蛋鬼","酒鬼","村民"]
-            },
-            "5": {
-                "入门": ["狼人","狼人","预言家","强盗","捣蛋鬼","酒鬼","失眠者","村民"]
-            },
-            "6": {
-                "入门": ["化身幽灵","狼人","狼人","预言家","强盗","捣蛋鬼","酒鬼","失眠者","村民"]
-            },
-            "7": {
-                "入门": ["化身幽灵","狼人","狼人","预言家","强盗","捣蛋鬼","酒鬼","失眠者","村民","皮匠"]
-            },
-            "8": {
-                "入门": ["化身幽灵","狼人","狼人","爪牙","预言家","强盗","捣蛋鬼","酒鬼","失眠者","村民","猎人"]
-            },
-            "9": {
-                "入门": ["化身幽灵","狼人","狼人","爪牙","预言家","强盗","捣蛋鬼","酒鬼","失眠者","村民","猎人","皮匠"]
-            }
-        }
 
     def get_available_modes(self, player_count: int) -> List[str]:
         key = str(player_count)
@@ -285,7 +263,7 @@ class WerewolfDealer:
                 steps.append({"role": role, "players": players})
         return steps
 
-    # ---- 新增：一键夜晚自动流程（默认策略，必要时可传入 choices 指定目标） ----
+    # ---- 一键夜晚自动流程（默认策略，必要时可传入 choices 指定目标） ----
     def run_night_automation(self, choices: Dict = None) -> List[Dict]:
         """
         按顺序自动执行夜晚行动；不要求用户逐步操作，使用默认/随机策略。
@@ -327,7 +305,7 @@ class WerewolfDealer:
             role = step["role"]
             players = step["players"]
             if role == "doppelganger":
-                # TODO: 需要确认化身幽灵的复制与后续行动规则
+                #  需要确认化身幽灵的复制与后续行动规则
                 log.append({"role": role, "players": players, "note": "未实现，需规则确认"})
                 continue
 
