@@ -4,7 +4,7 @@ title = One Night Werewolf
 package.name = onenightwerewolf
 package.domain = com.example
 source.dir = .
-source.include_exts = py,kv,png,jpg,jpeg,ttf,txt,md,mp3,wav,ogg
+source.include_exts = py,kv,png,jpg,jpeg,ttf,ttc,otf,txt,md,mp3,wav,ogg
 
 # Kivy 依赖
 requirements = python3,kivy
@@ -35,6 +35,8 @@ android.archs = arm64-v8a, armeabi-v7a
 android.debug = True
 android.accept_sdk_license = True
 android.build_tools_version = 33.0.2
+android.sdk_path = /usr/local/lib/android/sdk
+android.ndk_path = /usr/local/lib/android/sdk/ndk/25.1.8937393
 
 [p4a]
 # 透传给 python-for-android 的选项（通常不需要改）
