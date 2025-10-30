@@ -411,7 +411,7 @@ class OneNightApp(App):
         self._night_set_status('夜晚未开始')
         self._night_set_text('所有玩家已看牌。点击“开始夜晚”进入夜晚引导。')
         board.ids.night_countdown.text = ''
-        board.ids.night_continue.disabled = True
+        self._set_continue_enabled(False)
         try:
             board.ids.night_start_btn.disabled = False
             board.ids.night_end.disabled = True
@@ -473,10 +473,7 @@ class OneNightApp(App):
 
     def night_continue(self):
         # Called by Continue button; advance to next step
-        try:
-            self.manager.get_screen('board').ids.night_continue.disabled = True
-        except Exception:
-            pass
+        self._set_continue_enabled(False)
         self._finish_role_and_then(self._next_night_step)
 
     def end_guided_night(self):
@@ -506,7 +503,7 @@ class OneNightApp(App):
         board = self.manager.get_screen('board')
         actions = board.ids.night_actions
         actions.clear_widgets()
-        board.ids.night_continue.disabled = True
+        self._set_continue_enabled(False)
         # countdown
         self._cancel_night_timer()
         self.night_remaining = 15
@@ -516,7 +513,7 @@ class OneNightApp(App):
             self._night_set_text('夜晚结束。请点击“结束夜晚”进入讨论阶段。')
             self._action_context = None
             self._play_general_sound('night_over')
-            board.ids.night_continue.disabled = True
+            self._set_continue_enabled(False)
             return
 
         step = self.night_steps[self.night_step_idx]
@@ -549,7 +546,7 @@ class OneNightApp(App):
                 def on_reveal(idx, seen_role):
                     name = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(seen_role), seen_role)
                     self._log_action(f"{label}查看中央{idx+1}：{name}")
-                self._night_focus_centers(peek_count=1, on_done=lambda: setattr(board.ids.night_continue, 'disabled', False), on_reveal=on_reveal)
+                self._night_focus_centers(peek_count=1, on_done=lambda: self._set_continue_enabled(True), on_reveal=on_reveal)
             else:
                 if role_players_text:
                     text = f"狼人：{role_players_text} 请互相确认身份。"
@@ -560,7 +557,7 @@ class OneNightApp(App):
                     self._log_action(f"{label}互相确认身份")
                 else:
                     self._log_action('狼人互相确认身份')
-                board.ids.night_continue.disabled = False
+                self._set_continue_enabled(True)
         elif role == 'minion':
             wolf_idxs = [i for i, r in enumerate(self.player_roles) if WerewolfDealer.normalize_role(r) == 'werewolf']
             wolf_text = self._format_players(wolf_idxs)
@@ -576,7 +573,7 @@ class OneNightApp(App):
             self._night_set_text(text)
             # 若有专用音频，播放提示（仅语音，无文字 观看）
             self._play_sound('minion_thumb.MP3')
-            board.ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
         elif role == 'mason':
             if role_players_text:
                 text = f"守夜人：{role_players_text} 请互相确认身份。"
@@ -585,11 +582,11 @@ class OneNightApp(App):
             self._night_set_text(text)
             if role_players_text:
                 self._log_action(f"{label}互认身份")
-            board.ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
         elif role == 'seer':
             if not players:
                 self._night_set_text('本局没有预言家行动。')
-                board.ids.night_continue.disabled = False
+                self._set_continue_enabled(True)
                 return
             if role_players_text:
                 text = f"预言家：{role_players_text}，请选择“查看两张中央”或“查看一名玩家”。"
@@ -636,12 +633,12 @@ class OneNightApp(App):
                 seen_role = self.player_roles[i_idx]
                 name = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(seen_role), seen_role)
                 self._log_action(f"{label}查看当前身份：{name}")
-            board.ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
         elif role == 'doppelganger':
             # 化身幽灵：选择一名其他玩家查看并复制其角色，随后执行复制角色的夜晚行动
             if not players:
                 self._night_set_text('本局没有化身幽灵。')
-                board.ids.night_continue.disabled = False
+                self._set_continue_enabled(True)
                 return
             if role_players_text:
                 text = f"化身幽灵：{role_players_text}，请选择一名其他玩家复制其角色，然后点击“确认复制”。"
@@ -652,7 +649,7 @@ class OneNightApp(App):
             self._dg_mode(players)
         else:
             # Unknown or no-op role
-            board.ids.night_continue.disabled = False
+            self._set_continue_enabled(True)
 
     # ---- Night UI helpers ----
     def _night_set_status(self, text):
@@ -734,6 +731,15 @@ class OneNightApp(App):
             btn = Button(text=text, size_hint_y=None, height='40dp')
             btn.bind(on_release=lambda b, f=cb: f())
             actions.add_widget(btn)
+
+    def _set_continue_enabled(self, enabled):
+        def _apply(*_):
+            try:
+                screen = self.manager.get_screen('board')
+                screen.ids.night_continue.disabled = not enabled
+            except Exception:
+                pass
+        Clock.schedule_once(_apply, 0)
 
     def _night_buttons_box(self):
         try:
