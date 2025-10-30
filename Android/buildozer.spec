@@ -33,6 +33,8 @@ android.minapi = 21
 android.archs = arm64-v8a, armeabi-v7a
 # 禁用旧版 SDL2 调试
 android.debug = True
+android.accept_sdk_license = True
+android.build_tools_version = 33.0.2
 
 [p4a]
 # 透传给 python-for-android 的选项（通常不需要改）

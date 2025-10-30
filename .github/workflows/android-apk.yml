@@ -42,10 +42,18 @@ jobs:
           # Bundle sounds for BGM/SFX
           if [ -d sounds ]; then rsync -a sounds/ Android/sounds/; fi
 
+      - name: Pre-accept Android SDK licenses
+        run: |
+          export ANDROID_SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$ANDROID_SDK_ROOT/licenses"
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$ANDROID_SDK_ROOT/licenses/android-sdk-license"
+          echo "84831b9409646a918e30573bab4c9c91346d8abd" > "$ANDROID_SDK_ROOT/licenses/android-sdk-preview-license"
+
       - name: Build APK (debug)
         working-directory: Android
         env:
           BUILDOZER_WARN_ON_ROOT: '0'
+          ANDROID_SDK_ROOT: ${{ runner.home }}/.buildozer/android/platform/android-sdk
         run: |
           buildozer -v android debug
 
