@@ -44,8 +44,8 @@ class WerewolfDealer:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 self.rules = json.load(f)
         except FileNotFoundError:
-            # 提供最小内置默认规则以便测试与开发
-            self.rules = self._default_rules()
+            # 不再使用内置默认规则，若缺少配置则置为空字典（当前 GUI 随机发牌不依赖该配置）
+            self.rules = {}
 
 
     def get_available_modes(self, player_count: int) -> List[str]:

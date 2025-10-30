@@ -112,6 +112,10 @@ class WerewolfApp:
         self.deal_btn = ttk.Button(top, text="随机发牌", command=self.deal)
         self.deal_btn.pack(side=tk.LEFT, padx=6)
 
+        # 设置按钮：打开音频设置（BGM 开关与音量、提示音音量）
+        self.settings_btn = ttk.Button(top, text="设置", command=self._open_settings_dialog)
+        self.settings_btn.pack(side=tk.LEFT, padx=6)
+
     # （已移除导出结果按钮）
 
         self.cards_frame = ttk.Frame(frm)
@@ -130,6 +134,16 @@ class WerewolfApp:
         self._night_after_id = None  # Tk after 计时器 id，便于取消
         # 夜晚音频与继续按钮控制
         self._wake_in_progress = False
+        # 夜晚背景音乐控制
+        self._bgm_playing = False
+        self._bgm_thread = None
+        self._bgm_stop_flag = False
+        self._bgm_channel = None  # pygame 专用通道
+        self._bgm_sound = None
+        # 音量与开关（0.0~1.0）
+        self._bgm_enabled = True
+        self._bgm_volume = 0.6
+        self._sfx_volume = 0.9  # 角色唤醒/闭眼提示音量，仅 pygame 生效
 
     # === 声音播放辅助 ===
     def _get_role_sound_file(self, role: str, event: str):
@@ -166,6 +180,26 @@ class WerewolfApp:
             p = os.path.join(self.sounds_dir, f"{name}{ext}")
             if os.path.exists(p):
                 return p
+        return None
+
+    def _find_bgm_file(self):
+        """专门查找夜晚背景音乐文件：默认名为 'Mysterious Light.mp3'（大小写均可）。"""
+        if not self.sounds_dir:
+            return None
+        candidates = [
+            'Mysterious Light', 'mysterious light', 'Mysterious_Light', 'mysterious_light'
+        ]
+        for base in candidates:
+            p = self._find_sound_file(base)
+            if p:
+                return p
+        # 兜底：直接检测 sounds 目录里是否有该文件
+        try:
+            for fn in os.listdir(self.sounds_dir):
+                if fn.lower().startswith('mysterious light') and fn.lower().endswith('.mp3'):
+                    return os.path.join(self.sounds_dir, fn)
+        except Exception:
+            pass
         return None
 
     def _play_general_sound(self, name: str, on_complete=None):
@@ -232,6 +266,12 @@ class WerewolfApp:
                     try:
                         # 使用 pygame 播放，通常比 playsound 更顺滑
                         obj.mixer.music.load(filepath)
+                        try:
+                            vol = float(getattr(self, '_sfx_volume', 1.0))
+                            vol = max(0.0, min(1.0, vol))
+                            obj.mixer.music.set_volume(vol)
+                        except Exception:
+                            pass
                         obj.mixer.music.play()
                         # 阻塞等待播放结束（在工作线程中，不阻塞 UI）
                         while obj.mixer.music.get_busy():
@@ -255,6 +295,206 @@ class WerewolfApp:
                         pass
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    # === 背景音乐（夜晚阶段） ===
+    def _start_bgm(self):
+        """在夜晚阶段开始播放循环背景音乐（若找到 'Mysterious Light.mp3'）。"""
+        if self._bgm_playing:
+            return
+        # 尊重开关
+        if not bool(getattr(self, '_bgm_enabled', True)):
+            return
+        path = self._find_bgm_file()
+        if not path:
+            return
+
+        # 初始化音频后端（与 _play_sound_file 使用相同的初始化逻辑）
+        def _init_audio_backend():
+            if getattr(self, '_audio_backend', None):
+                return
+            backend = 'none'
+            backend_obj = None
+            try:
+                mod = importlib.import_module('pygame')
+                try:
+                    mod.mixer.init()
+                    backend = 'pygame'
+                    backend_obj = mod
+                except Exception:
+                    backend = 'none'
+                    backend_obj = None
+            except Exception:
+                mod = None
+            if backend == 'none':
+                try:
+                    mod2 = importlib.import_module('playsound')
+                    backend = 'playsound'
+                    backend_obj = mod2
+                except Exception:
+                    backend = 'none'
+                    backend_obj = None
+            self._audio_backend = backend
+            self._audio_obj = backend_obj
+
+        _init_audio_backend()
+        backend = getattr(self, '_audio_backend', 'none')
+        obj = getattr(self, '_audio_obj', None)
+
+        if backend == 'pygame' and obj is not None:
+            try:
+                # 使用独立通道播放循环背景音乐，避免与 mixer.music 冲突
+                if self._bgm_channel is None:
+                    # 预留一个通道（例如 1 号），不强制通道数，自动获取一个空闲通道
+                    self._bgm_channel = obj.mixer.find_channel(True)
+                self._bgm_sound = obj.mixer.Sound(path)
+                try:
+                    vol = float(getattr(self, '_bgm_volume', 0.6))
+                    vol = max(0.0, min(1.0, vol))
+                    # 同时设置 sound 与通道的音量，取其一生效即可
+                    self._bgm_sound.set_volume(vol)
+                    if self._bgm_channel:
+                        self._bgm_channel.set_volume(vol)
+                except Exception:
+                    pass
+                self._bgm_channel.play(self._bgm_sound, loops=-1)
+                self._bgm_playing = True
+            except Exception:
+                self._bgm_playing = False
+        elif backend == 'playsound' and obj is not None:
+            # 退化方案：在子线程中循环播放，停止可能需要等待当前一轮播放结束
+            self._bgm_stop_flag = False
+            self._bgm_playing = True
+
+            def _loop():
+                try:
+                    ps = getattr(obj, 'playsound', None)
+                    while self._bgm_playing and not self._bgm_stop_flag and callable(ps):
+                        try:
+                            ps(path, block=True)
+                        except Exception:
+                            break
+                finally:
+                    self._bgm_playing = False
+
+            self._bgm_thread = threading.Thread(target=_loop, daemon=True)
+            self._bgm_thread.start()
+        else:
+            # 无可用后端，忽略背景音乐
+            self._bgm_playing = False
+
+    def _stop_bgm(self, fade_ms: int = 0):
+        """停止夜晚背景音乐。fade_ms>0 时在 pygame 后端进行淡出。"""
+        try:
+            backend = getattr(self, '_audio_backend', 'none')
+            obj = getattr(self, '_audio_obj', None)
+            if self._bgm_playing:
+                if backend == 'pygame' and obj is not None:
+                    try:
+                        if self._bgm_channel:
+                            if fade_ms and hasattr(self._bgm_channel, 'fadeout'):
+                                self._bgm_channel.fadeout(int(fade_ms))
+                            else:
+                                self._bgm_channel.stop()
+                    except Exception:
+                        pass
+                elif backend == 'playsound':
+                    # playsound 无法中途打断，只能置标志并等待一轮结束
+                    self._bgm_stop_flag = True
+                self._bgm_playing = False
+        finally:
+            self._bgm_channel = None
+            self._bgm_sound = None
+
+    # === 设置对话框 ===
+    def _open_settings_dialog(self):
+        # 若已打开则置顶
+        if hasattr(self, '_settings_win') and self._settings_win and self._settings_win.winfo_exists():
+            try:
+                self._settings_win.deiconify(); self._settings_win.lift(); self._settings_win.focus_force()
+            except Exception:
+                pass
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("设置")
+        win.transient(self.root)
+        win.resizable(False, False)
+        self._settings_win = win
+
+        frm = ttk.Frame(win, padding=10)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        # BGM 开关
+        self._bgm_enabled_var = tk.BooleanVar(value=bool(getattr(self, '_bgm_enabled', True)))
+        chk = ttk.Checkbutton(frm, text="启用夜晚背景音乐 (BGM)", variable=self._bgm_enabled_var, command=self._on_bgm_enabled_changed)
+        chk.grid(row=0, column=0, sticky='w', pady=(0,6))
+
+        # BGM 音量
+        ttk.Label(frm, text="BGM 音量").grid(row=1, column=0, sticky='w')
+        self._bgm_volume_var = tk.IntVar(value=int(getattr(self, '_bgm_volume', 0.6) * 100))
+        bgm_scale = ttk.Scale(frm, from_=0, to=100, orient='horizontal', command=self._on_bgm_volume_slide)
+        # ttk.Scale 的 command 传字符串，另配绑定变量以显示当前数值
+        bgm_scale.set(self._bgm_volume_var.get())
+        bgm_scale.grid(row=2, column=0, sticky='ew', pady=(2,10))
+
+        # 提示音音量（SFX）
+        ttk.Label(frm, text="唤醒/闭眼提示音 音量 (pygame 生效)").grid(row=3, column=0, sticky='w')
+        self._sfx_volume_var = tk.IntVar(value=int(getattr(self, '_sfx_volume', 0.9) * 100))
+        sfx_scale = ttk.Scale(frm, from_=0, to=100, orient='horizontal', command=self._on_sfx_volume_slide)
+        sfx_scale.set(self._sfx_volume_var.get())
+        sfx_scale.grid(row=4, column=0, sticky='ew', pady=(2,10))
+
+        # 关闭按钮
+        btn_close = ttk.Button(frm, text="关闭", command=win.destroy)
+        btn_close.grid(row=5, column=0, sticky='e', pady=(4,0))
+
+        # 列宽
+        frm.columnconfigure(0, weight=1)
+
+    def _on_bgm_enabled_changed(self):
+        enabled = bool(self._bgm_enabled_var.get())
+        self._bgm_enabled = enabled
+        if not enabled:
+            # 若当前在放，则停止
+            self._stop_bgm()
+        else:
+            # 若夜晚进行中且未播放，则启动
+            if getattr(self, 'night_mode', False) and not self._bgm_playing:
+                self._start_bgm()
+
+    def _on_bgm_volume_slide(self, val):
+        try:
+            v = float(val)
+        except Exception:
+            v = float(self._bgm_volume_var.get())
+        v = max(0.0, min(100.0, v)) / 100.0
+        self._bgm_volume = v
+        # 运行期更新音量（pygame）
+        try:
+            backend = getattr(self, '_audio_backend', 'none')
+            obj = getattr(self, '_audio_obj', None)
+            if backend == 'pygame' and obj is not None and self._bgm_channel is not None:
+                self._bgm_channel.set_volume(v)
+                if self._bgm_sound is not None:
+                    self._bgm_sound.set_volume(v)
+        except Exception:
+            pass
+
+    def _on_sfx_volume_slide(self, val):
+        try:
+            v = float(val)
+        except Exception:
+            v = float(self._sfx_volume_var.get())
+        v = max(0.0, min(100.0, v)) / 100.0
+        self._sfx_volume = v
+        # 若当前有音乐在播放（pygame.mixer.music），更新音量
+        try:
+            backend = getattr(self, '_audio_backend', 'none')
+            obj = getattr(self, '_audio_obj', None)
+            if backend == 'pygame' and obj is not None:
+                obj.mixer.music.set_volume(v)
+        except Exception:
+            pass
 
     def _play_role_wake(self, role: str):
         """播放某角色唤醒音频（若有）。"""
@@ -700,6 +940,11 @@ class WerewolfApp:
                 self.focus_frame.destroy()
         except Exception:
             pass
+        # 停止夜晚背景音乐
+        try:
+            self._stop_bgm()
+        except Exception:
+            pass
         # 取消夜晚计时器并重置标志
         try:
             if getattr(self, '_night_after_id', None):
@@ -859,11 +1104,23 @@ class WerewolfApp:
         """设置窗口背景图，自动覆盖整个窗口并随大小变化缩放。"""
         # 查找背景图片
         bg_path = None
+        # 1) 先在角色资源目录查找（兼容打包后的资源路径）
         for name in ("background.jpg", "background.png"):
             p = os.path.join(self._roles_dir(), name)
             if os.path.exists(p):
                 bg_path = p
                 break
+        # 2) 若未找到，再在项目 images/ 根目录查找（开发态常见放置位置）
+        if not bg_path:
+            try:
+                images_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images'))
+                for name in ("background.jpg", "background.png"):
+                    p = os.path.join(images_root, name)
+                    if os.path.exists(p):
+                        bg_path = p
+                        break
+            except Exception:
+                pass
         if not bg_path:
             return
 
@@ -937,11 +1194,39 @@ class WerewolfApp:
             if os.path.exists(p):
                 placeholder = p
                 break
+        # 若角色资源目录未命中，再尝试项目 images/ 根目录的 background.*
+        if not placeholder:
+            try:
+                images_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images'))
+                for fn in ("background.jpg", "background.png"):
+                    p = os.path.join(images_root, fn)
+                    if os.path.exists(p):
+                        placeholder = p
+                        break
+            except Exception:
+                pass
 
         try:
             resample = Image.Resampling.LANCZOS
         except Exception:
             resample = Image.LANCZOS
+
+        # 若未找到占位图，则选用任意一张角色图片作为占位（例如 villager / werewolf）
+        if not placeholder:
+            try:
+                for name in ("villager.png", "werewolf.png"):
+                    cand = os.path.join(roles_dir, name)
+                    if os.path.exists(cand):
+                        placeholder = cand
+                        break
+                if not placeholder:
+                    # 遍历目录下任意一张图片
+                    for fn in os.listdir(roles_dir):
+                        if os.path.splitext(fn)[1].lower() in (".png", ".jpg", ".jpeg"):
+                            placeholder = os.path.join(roles_dir, fn)
+                            break
+            except Exception:
+                placeholder = None
 
         if placeholder:
             try:
@@ -1404,6 +1689,11 @@ class WerewolfApp:
         self.night_countdown_lbl.pack(side=tk.RIGHT)
         self.night_buttons_frame = ttk.Frame(self.night_panel)
         self.night_buttons_frame.pack(fill=tk.X, pady=(6,0))
+        # 启动夜晚背景音乐
+        try:
+            self._start_bgm()
+        except Exception:
+            pass
         # 播放夜晚开始提示，结束后再启动第一步
         try:
             self._play_general_sound('night_start', on_complete=self._run_night_step)
@@ -1434,6 +1724,11 @@ class WerewolfApp:
             except Exception:
                 pass
             end_btn.pack(side=tk.LEFT)
+            # 夜晚结束时先淡出/停止背景音乐，再播放结束提示音
+            try:
+                self._stop_bgm(fade_ms=800)
+            except Exception:
+                pass
             # 播放夜晚结束提示音，结束后放开按钮
             def _enable_end():
                 try:
@@ -1600,6 +1895,11 @@ class WerewolfApp:
         except Exception:
             pass
         self._night_after_id = None
+        # 停止背景音乐
+        try:
+            self._stop_bgm()
+        except Exception:
+            pass
         if hasattr(self, 'night_panel') and self.night_panel and self.night_panel.winfo_exists():
             self.night_panel.destroy()
         # 更新控制区提示
