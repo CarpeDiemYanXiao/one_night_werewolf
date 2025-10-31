@@ -95,6 +95,39 @@ jobs:
           ls -la "$BUILD_SDK/tools/bin" || true
           echo "cmdline-tools latest bin contents:"
           ls -la "$BUILD_SDK/cmdline-tools/latest/bin" || true
+          # If sdkmanager still missing in BUILD_SDK/tools/bin, download commandlinetools as a fallback
+          if [ ! -x "$BUILD_SDK/tools/bin/sdkmanager" ]; then
+            echo "sdkmanager not found in $BUILD_SDK/tools/bin - attempting download fallback"
+            TMPDIR=$(mktemp -d)
+            CLICMD_ZIP="$TMPDIR/cmdline-tools.zip"
+            # Google cmdline-tools for linux x86_64 (version may be updated by Google over time)
+            echo "Downloading commandlinetools (fallback) to $CLICMD_ZIP"
+            curl -fSL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o "$CLICMD_ZIP" || {
+              echo "Failed to download cmdline-tools via curl, attempting alternate URL"
+              curl -fSL "https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip" -o "$CLICMD_ZIP" || true
+            }
+            if [ -f "$CLICMD_ZIP" ]; then
+              unzip -q "$CLICMD_ZIP" -d "$TMPDIR"
+              mkdir -p "$BUILD_SDK/cmdline-tools/latest"
+              # Some zips contain a 'cmdline-tools' root folder, others 'tools' — move contents into latest
+              if [ -d "$TMPDIR/cmdline-tools" ]; then
+                mv "$TMPDIR/cmdline-tools"/* "$BUILD_SDK/cmdline-tools/latest/" || true
+              else
+                mv "$TMPDIR"/* "$BUILD_SDK/cmdline-tools/latest/" || true
+              fi
+              rm -rf "$TMPDIR"
+            else
+              echo "No cmdline-tools zip downloaded; skipping fallback download"
+            fi
+            # create compatibility link into tools/bin
+            mkdir -p "$BUILD_SDK/tools/bin"
+            if [ -x "$BUILD_SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+              ln -sfn "$BUILD_SDK/cmdline-tools/latest/bin/sdkmanager" "$BUILD_SDK/tools/bin/sdkmanager"
+              chmod +x "$BUILD_SDK/tools/bin/sdkmanager" || true
+            fi
+            echo "Post-fallback tools/bin listing:"
+            ls -la "$BUILD_SDK/tools/bin" || true
+          fi
 
       - name: Cache Buildozer and Gradle
         uses: actions/cache@v4
@@ -120,15 +153,12 @@ jobs:
 
       - name: Clean previous Buildozer state (avoid stale ANDROIDAPI)
         run: |
-          echo "Removing Android/.buildozer and ~/.buildozer to avoid stale cached state"
+          echo "Removing project-specific build dir to avoid stale cache"
           rm -rf Android/.buildozer || true
-          rm -rf $HOME/.buildozer || true
           echo "List workspace root:"
           ls -la || true
           echo "List Android dir:"
           ls -la Android || true
-          echo "Existing Buildozer dirs:"
-          ls -la $HOME/.buildozer || true
 
       - name: Prepare Android app sources
         run: |
@@ -149,14 +179,18 @@ jobs:
       - name: Prepare Buildozer environment (PATH and vars)
         run: |
           BUILD_SDK="$HOME/.buildozer/android/platform/android-sdk"
+          NDK_VERSION="25.1.8937393"
+          BUILD_TOOLS_VERSION="33.0.2"
           echo "ANDROID_SDK_ROOT=$BUILD_SDK" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$BUILD_SDK" >> "$GITHUB_ENV"
-          echo "ANDROIDNDK=$BUILD_SDK/ndk/25.1.8937393" >> "$GITHUB_ENV"
-          # ensure platform-tools and cmdline-tools are in PATH for p4a
-          echo "PATH=$BUILD_SDK/platform-tools:$BUILD_SDK/cmdline-tools/latest/bin:$BUILD_SDK/tools/bin:$PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$BUILD_SDK/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          # ensure platform-tools, cmdline-tools, build-tools and tools are in PATH for p4a
+          echo "PATH=$BUILD_SDK/platform-tools:$BUILD_SDK/cmdline-tools/latest/bin:$BUILD_SDK/build-tools/$BUILD_TOOLS_VERSION:$BUILD_SDK/tools:$BUILD_SDK/tools/bin:$PATH" >> "$GITHUB_ENV"
           echo "--- Buildozer SDK contents ---"
           ls -la "$BUILD_SDK" || true
+          echo "--- platform-tools ---"
           ls -la "$BUILD_SDK/platform-tools" || true
+          echo "--- cmdline-tools ---"
           ls -la "$BUILD_SDK/cmdline-tools" || true
 
       - name: Build APK (debug)
@@ -165,8 +199,7 @@ jobs:
           BUILDOZER_WARN_ON_ROOT: '0'
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROIDSDK: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROIDNDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.1.8937393
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
           ANDROIDAPI: '33'
           ANDROIDMINAPI: '21'
           ACLOCAL_PATH: '/usr/share/aclocal'
