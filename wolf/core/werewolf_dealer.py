@@ -139,6 +139,7 @@ class WerewolfDealer:
             "center_cards": center_cards,
             # 初始分配快照（用于夜晚行动顺序与目标玩家绑定）
             "initial_player_cards": player_cards.copy(),
+            "initial_center_cards": center_cards.copy(),
             # 每位玩家是否已查看（每人只允许查看一次）
             "viewed": [False] * player_count,
             # 当前行动的玩家索引（0-based），默认从 0 开始
@@ -163,6 +164,7 @@ class WerewolfDealer:
             "player_cards": s["player_cards"].copy(),
             "center_cards": s["center_cards"].copy(),
             "initial_player_cards": s.get("initial_player_cards", []).copy(),
+            "initial_center_cards": s.get("initial_center_cards", []).copy(),
             "viewed": s["viewed"].copy(),
             "turn_index": s["turn_index"],
             "action_phase": s["action_phase"]
@@ -254,13 +256,17 @@ class WerewolfDealer:
         """返回夜晚步骤列表，包含出现的角色及相关玩家（基于初始身份）。"""
         order = ["doppelganger", "werewolf", "minion", "mason", "seer", "robber", "troublemaker", "drunk", "insomniac"]
         steps = []
+        center_cards = []
+        if hasattr(self, "session"):
+            center_cards = self.session.get("initial_center_cards") or self.session.get("center_cards") or []
         for role in order:
             players = self.get_role_indices(role, use_initial=True)
             if role == "mason" and len(players) not in (0, 2):
                 # 守夜人必须成对出现，否则忽略以防配置问题
                 players = []
-            if players:
-                steps.append({"role": role, "players": players})
+            in_center = any(self.normalize_role(c) == role for c in center_cards)
+            if players or in_center:
+                steps.append({"role": role, "players": players, "in_center": in_center})
         return steps
 
     # ---- 一键夜晚自动流程（默认策略，必要时可传入 choices 指定目标） ----
