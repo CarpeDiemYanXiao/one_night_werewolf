@@ -28,13 +28,16 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          log-accepted-android-sdk-licenses: false
-          packages: |
-            build-tools;33.0.2
-            platforms;android-33
-            platform-tools
-            ndk;25.1.8937393
+
+      - name: Install required Android packages
+        run: |
+          SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --install \
+            "build-tools;33.0.2" \
+            "platforms;android-33" \
+            "platform-tools" \
+            "ndk;25.1.8937393"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --licenses || true
 
       - name: Cache Buildozer and Gradle
         uses: actions/cache@v4
@@ -68,10 +71,10 @@ jobs:
           # Bundle sounds for BGM/SFX
           if [ -d sounds ]; then rsync -a sounds/ Android/sounds/; fi
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android SDK licenses (redundant safeguard)
         run: |
           SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
-          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --licenses || true
 
       - name: Build APK (debug)
         working-directory: Android
