@@ -28,13 +28,51 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          log-accepted-android-sdk-licenses: false
-          packages: |
-            build-tools;33.0.2
-            platforms;android-33
-            platform-tools
-            ndk;25.1.8937393
+
+      - name: Install required Android packages
+        run: |
+          SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --install \
+            "build-tools;33.0.2" \
+            "build-tools;36.1.0" \
+            "platforms;android-31" \
+            "platforms;android-33" \
+            "platform-tools" \
+            "ndk;25.1.8937393"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --licenses || true
+          echo "GLOBAL_ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Prime Buildozer SDK directory
+        run: |
+          SDK_ROOT=${GLOBAL_ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
+          BUILD_SDK="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$BUILD_SDK"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$BUILD_SDK" --install \
+            "build-tools;33.0.2" \
+            "build-tools;36.1.0" \
+            "platforms;android-31" \
+            "platforms;android-33" \
+            "platform-tools" \
+            "ndk;25.1.8937393"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$BUILD_SDK" --licenses || true
+          echo "ANDROID_SDK_ROOT=$BUILD_SDK" >> "$GITHUB_ENV"
+
+      - name: Expose sdkmanager to Buildozer SDK path
+        run: |
+          GLOBAL=${GLOBAL_ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
+          BUILD_SDK="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$BUILD_SDK/cmdline-tools"
+          # Prefer existing latest, fall back to common installed dir
+          if [ -d "$GLOBAL/cmdline-tools/latest" ]; then
+            ln -sfn "$GLOBAL/cmdline-tools/latest" "$BUILD_SDK/cmdline-tools/latest"
+          elif [ -d "$GLOBAL/cmdline-tools/16.0" ]; then
+            ln -sfn "$GLOBAL/cmdline-tools/16.0" "$BUILD_SDK/cmdline-tools/latest"
+          fi
+          mkdir -p "$BUILD_SDK/tools/bin"
+          if [ -x "$GLOBAL/cmdline-tools/latest/bin/sdkmanager" ]; then
+            ln -sfn "$GLOBAL/cmdline-tools/latest/bin/sdkmanager" "$BUILD_SDK/tools/bin/sdkmanager"
+          fi
+          echo "Buildozer SDK tree contents:" && ls -la "$BUILD_SDK" || true
 
       - name: Cache Buildozer and Gradle
         uses: actions/cache@v4
@@ -46,10 +84,11 @@ jobs:
 
       - name: Ensure legacy sdkmanager path exists (compat)
         run: |
-          SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
+          SDK_ROOT=${ANDROID_SDK_ROOT:-$HOME/.buildozer/android/platform/android-sdk}
+          GLOBAL_SDK=${GLOBAL_ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
           mkdir -p "$SDK_ROOT/tools/bin"
-          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            ln -sf "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "$SDK_ROOT/tools/bin/sdkmanager"
+          if [ -x "$GLOBAL_SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+            ln -sf "$GLOBAL_SDK/cmdline-tools/latest/bin/sdkmanager" "$SDK_ROOT/tools/bin/sdkmanager"
           fi
 
       - name: Install buildozer and dependencies
@@ -68,10 +107,10 @@ jobs:
           # Bundle sounds for BGM/SFX
           if [ -d sounds ]; then rsync -a sounds/ Android/sounds/; fi
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android SDK licenses (redundant safeguard)
         run: |
-          SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
-          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          SDK_ROOT=${GLOBAL_ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$HOME/.buildozer/android/platform/android-sdk" --licenses || true
 
       - name: Build APK (debug)
         working-directory: Android
@@ -81,6 +120,8 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROIDSDK: ${{ env.ANDROID_SDK_ROOT }}
           ANDROIDNDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.1.8937393
+          ANDROIDAPI: '33'
+          ANDROIDMINAPI: '21'
         run: |
           buildozer -v android debug
 
