@@ -129,6 +129,7 @@ class OneNightApp(App):
         self._tts_engine = plyer_tts
         self._tts_available = self._tts_engine is not None
         self._last_spoken_text = None
+        self._advancing_role = False
 
         # Add screens defined in KV
         try:
@@ -456,12 +457,14 @@ class OneNightApp(App):
         if self.night_mode:
             return
         self.night_mode = True
+        self._advancing_role = False
         board = self.manager.get_screen('board')
         try:
             board.ids.night_start_btn.disabled = True
             board.ids.night_end.disabled = False
         except Exception:
             pass
+        self._stop_voice_playback()
         self._night_start_bgm()
         self.night_steps = self.dealer.get_night_steps() or []
         self.night_step_idx = 0
@@ -473,8 +476,23 @@ class OneNightApp(App):
 
     def night_continue(self):
         # Called by Continue button; advance to next step
+        self._advance_role()
+
+    def _advance_role(self):
+        if not self.night_mode:
+            return
+        if getattr(self, '_advancing_role', False):
+            return
+        self._advancing_role = True
         self._set_continue_enabled(False)
-        self._finish_role_and_then(self._next_night_step)
+        self._cancel_night_timer()
+        self._stop_voice_playback()
+
+        def _after():
+            self._advancing_role = False
+            self._next_night_step()
+
+        self._finish_role_and_then(_after)
 
     def end_guided_night(self):
         if not self.night_mode:
@@ -482,6 +500,8 @@ class OneNightApp(App):
         self.night_mode = False
         self._stop_bgm()
         self._cancel_night_timer()
+        self._stop_voice_playback()
+        self._advancing_role = False
         self._night_set_status('夜晚已结束：可自由翻牌/交换')
         self._night_set_text('')
         self._log_action('夜晚结束')
@@ -500,14 +520,13 @@ class OneNightApp(App):
         self.run_night_step()
 
     def run_night_step(self, *_):
+        self._advancing_role = False
+        self._stop_voice_playback()
         board = self.manager.get_screen('board')
         actions = board.ids.night_actions
         actions.clear_widgets()
         self._set_continue_enabled(False)
-        # countdown
         self._cancel_night_timer()
-        self.night_remaining = 15
-        self._night_tick()
 
         if self.night_step_idx >= len(self.night_steps):
             self._night_set_text('夜晚结束。请点击“结束夜晚”进入讨论阶段。')
@@ -516,9 +535,14 @@ class OneNightApp(App):
             self._set_continue_enabled(False)
             return
 
+        # countdown
+        self.night_remaining = 20
+        self._night_tick()
+
         step = self.night_steps[self.night_step_idx]
         role = step.get('role')
         players = step.get('players', [])
+        in_center = step.get('in_center', False)
         role_players_text = self._format_players(players)
         normalized_role = WerewolfDealer.normalize_role(role) if role else role
         display_name = ROLE_DISPLAY_NAMES.get(normalized_role, role or '')
@@ -537,7 +561,10 @@ class OneNightApp(App):
 
         # Dispatch per role
         if role == 'werewolf':
-            if len(players) == 1:
+            if not players:
+                self._night_set_text('狼人：若在场，请互相确认身份。')
+                self._set_continue_enabled(True)
+            elif len(players) == 1:
                 if role_players_text:
                     text = f"狼人：{role_players_text} 为独狼，可查看任意一张中央牌。"
                 else:
@@ -559,6 +586,10 @@ class OneNightApp(App):
                     self._log_action('狼人互相确认身份')
                 self._set_continue_enabled(True)
         elif role == 'minion':
+            if not players:
+                self._night_set_text('爪牙：若在场，请默记守护对象。')
+                self._set_continue_enabled(True)
+                return
             wolf_idxs = [i for i, r in enumerate(self.player_roles) if WerewolfDealer.normalize_role(r) == 'werewolf']
             wolf_text = self._format_players(wolf_idxs)
             if wolf_text:
@@ -575,6 +606,10 @@ class OneNightApp(App):
             self._play_sound('minion_thumb.MP3')
             self._set_continue_enabled(True)
         elif role == 'mason':
+            if not players:
+                self._night_set_text('守夜人：若在场，请互相确认身份。')
+                self._set_continue_enabled(True)
+                return
             if role_players_text:
                 text = f"守夜人：{role_players_text} 请互相确认身份。"
             else:
@@ -585,7 +620,7 @@ class OneNightApp(App):
             self._set_continue_enabled(True)
         elif role == 'seer':
             if not players:
-                self._night_set_text('本局没有预言家行动。')
+                self._night_set_text('预言家：若在场，可查看两张中央或一名玩家。')
                 self._set_continue_enabled(True)
                 return
             if role_players_text:
@@ -602,6 +637,10 @@ class OneNightApp(App):
             if robber is not None:
                 text = f"强盗：玩家{robber+1}，请选择一名其他玩家交换。"
             else:
+                if not players:
+                    self._night_set_text('强盗：若在场，请选择一名其他玩家交换。')
+                    self._set_continue_enabled(True)
+                    return
                 text = '强盗：请选择一名其他玩家交换。'
             self._night_set_text(text)
             self._robber_mode(robber)
@@ -610,6 +649,10 @@ class OneNightApp(App):
             if tm is not None:
                 text = f"捣蛋鬼：玩家{tm+1}，请选择两名其他玩家交换。"
             else:
+                if not players:
+                    self._night_set_text('捣蛋鬼：若在场，请选择两名玩家交换。')
+                    self._set_continue_enabled(True)
+                    return
                 text = '捣蛋鬼：请选择两名其他玩家交换。'
             self._night_set_text(text)
             self._troublemaker_mode(tm)
@@ -618,6 +661,10 @@ class OneNightApp(App):
             if drunk is not None:
                 text = f"酒鬼：玩家{drunk+1}，请选择一张中央牌交换（不展示新牌）。"
             else:
+                if not players:
+                    self._night_set_text('酒鬼：若在场，请与中央任意一张牌交换。')
+                    self._set_continue_enabled(True)
+                    return
                 text = '酒鬼：请选择一张中央牌交换（不展示新牌）。'
             self._night_set_text(text)
             self._drunk_mode(drunk)
@@ -626,6 +673,10 @@ class OneNightApp(App):
             if i_idx is not None:
                 text = f"失眠者：玩家{i_idx+1}，查看你当前的牌，然后点击继续。"
             else:
+                if not players:
+                    self._night_set_text('失眠者：若在场，请查看你当前的牌。')
+                    self._set_continue_enabled(True)
+                    return
                 text = '失眠者：查看你当前的牌。'
             self._night_set_text(text)
             if i_idx is not None:
@@ -637,7 +688,7 @@ class OneNightApp(App):
         elif role == 'doppelganger':
             # 化身幽灵：选择一名其他玩家查看并复制其角色，随后执行复制角色的夜晚行动
             if not players:
-                self._night_set_text('本局没有化身幽灵。')
+                self._night_set_text('化身幽灵：若在场，请选择一名玩家复制其角色。')
                 self._set_continue_enabled(True)
                 return
             if role_players_text:
@@ -714,7 +765,14 @@ class OneNightApp(App):
         if self.night_remaining <= 0:
             return
         self.night_remaining -= 1
-        self._night_ev = Clock.schedule_once(self._night_tick, 1)
+        if self.night_remaining <= 0:
+            try:
+                self.manager.get_screen('board').ids.night_countdown.text = '0'
+            except Exception:
+                pass
+            Clock.schedule_once(lambda *_: self._advance_role(), 0)
+        else:
+            self._night_ev = Clock.schedule_once(self._night_tick, 1)
 
     def _cancel_night_timer(self):
         if self._night_ev is not None:
@@ -1092,6 +1150,22 @@ class OneNightApp(App):
             if on_complete:
                 on_complete()
 
+    def _stop_voice_playback(self):
+        # stop all currently playing guide sounds/tts to avoid overlap
+        for snd in list(getattr(self, '_playing_sounds', []) or []):
+            try:
+                snd.stop()
+            except Exception:
+                pass
+        self._playing_sounds = []
+        if getattr(self, '_tts_available', False):
+            engine = getattr(self, '_tts_engine', None)
+            if engine and hasattr(engine, 'stop'):
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+
     def _play_sound(self, filename, on_complete=None):
         d = self._ensure_sounds_dir()
         if not d:
@@ -1107,6 +1181,7 @@ class OneNightApp(App):
         try:
             snd = SoundLoader.load(path)
             if snd:
+                self._stop_voice_playback()
                 fired = {'done': False}
 
                 def _cleanup(*_):
