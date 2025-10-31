@@ -119,6 +119,19 @@ jobs:
           SDK_ROOT=${GLOBAL_ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
           yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$HOME/.buildozer/android/platform/android-sdk" --licenses || true
 
+      - name: Prepare Buildozer environment (PATH and vars)
+        run: |
+          BUILD_SDK="$HOME/.buildozer/android/platform/android-sdk"
+          echo "ANDROID_SDK_ROOT=$BUILD_SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$BUILD_SDK" >> "$GITHUB_ENV"
+          echo "ANDROIDNDK=$BUILD_SDK/ndk/25.1.8937393" >> "$GITHUB_ENV"
+          # ensure platform-tools and cmdline-tools are in PATH for p4a
+          echo "PATH=$BUILD_SDK/platform-tools:$BUILD_SDK/cmdline-tools/latest/bin:$BUILD_SDK/tools/bin:$PATH" >> "$GITHUB_ENV"
+          echo "--- Buildozer SDK contents ---"
+          ls -la "$BUILD_SDK" || true
+          ls -la "$BUILD_SDK/platform-tools" || true
+          ls -la "$BUILD_SDK/cmdline-tools" || true
+
       - name: Build APK (debug)
         working-directory: Android
         env:
