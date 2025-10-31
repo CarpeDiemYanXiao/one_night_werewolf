@@ -43,14 +43,43 @@ $commonArgs = @(
     "--hidden-import", "PIL.Image",
     "--hidden-import", "PIL.ImageTk",
     "--hidden-import", "pygame",
-    "--add-data", "wolf\resources\roles;resources\roles",
-    "--add-data", "images\roles;images\roles",
-    "--add-data", "sounds;sounds",
-    "wolf\main.py"
+    "--hidden-import", "playsound"
 )
+
+# 仅在目录存在时才打包静态资源，避免路径不存在导致失败
+if (Test-Path "images") {
+    # 打包整个 images 目录（含 images/roles 与 background.*）
+    $commonArgs += @("--add-data", "images;images")
+}
+if (Test-Path "sounds") {
+    $commonArgs += @("--add-data", "sounds;sounds")
+}
+
+# 入口脚本放在参数末尾
+$commonArgs += @("wolf\main.py")
 
 if ($OneFile) { $commonArgs = @("--onefile") + $commonArgs }
 if ($Clean) { $commonArgs = @("--clean") + $commonArgs }
+
+# Ensure audio backends are available (pygame preferred, playsound fallback)
+try {
+    & python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pygame') else 1)" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Installing pygame..." -ForegroundColor Yellow
+        & python -m pip install pygame | Out-Null
+    }
+} catch {
+    Write-Warning "Unable to verify/install pygame. If audio is missing in the EXE, install pygame manually."
+}
+try {
+    & python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('playsound') else 1)" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Installing playsound (fallback)..." -ForegroundColor Yellow
+        & python -m pip install playsound | Out-Null
+    }
+} catch {
+    Write-Host "Skipping playsound installation." -ForegroundColor DarkYellow
+}
 
 # Run PyInstaller
 Write-Host "Running: python -m PyInstaller $($commonArgs -join ' ')" -ForegroundColor Gray
