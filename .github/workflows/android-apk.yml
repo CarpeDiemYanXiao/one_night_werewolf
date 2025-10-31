@@ -69,17 +69,32 @@ jobs:
           GLOBAL=${GLOBAL_ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
           BUILD_SDK="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$BUILD_SDK/cmdline-tools"
-          # Prefer existing latest, fall back to common installed dir
+          # Prefer existing latest from global SDK, fall back to common installed dir
           if [ -d "$GLOBAL/cmdline-tools/latest" ]; then
             ln -sfn "$GLOBAL/cmdline-tools/latest" "$BUILD_SDK/cmdline-tools/latest"
           elif [ -d "$GLOBAL/cmdline-tools/16.0" ]; then
             ln -sfn "$GLOBAL/cmdline-tools/16.0" "$BUILD_SDK/cmdline-tools/latest"
           fi
           mkdir -p "$BUILD_SDK/tools/bin"
+          # Try several places to locate sdkmanager, then ensure a tools/bin/sdkmanager exists
           if [ -x "$GLOBAL/cmdline-tools/latest/bin/sdkmanager" ]; then
             ln -sfn "$GLOBAL/cmdline-tools/latest/bin/sdkmanager" "$BUILD_SDK/tools/bin/sdkmanager"
+          elif [ -x "$BUILD_SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+            ln -sfn "$BUILD_SDK/cmdline-tools/latest/bin/sdkmanager" "$BUILD_SDK/tools/bin/sdkmanager"
+          elif command -v sdkmanager >/dev/null 2>&1; then
+            SDKMAN=$(command -v sdkmanager)
+            ln -sfn "$SDKMAN" "$BUILD_SDK/tools/bin/sdkmanager"
           fi
-          echo "Buildozer SDK tree contents:" && ls -la "$BUILD_SDK" || true
+          # ensure executable
+          if [ -f "$BUILD_SDK/tools/bin/sdkmanager" ]; then
+            chmod +x "$BUILD_SDK/tools/bin/sdkmanager" || true
+          fi
+          echo "Buildozer SDK tree contents (post-expose):"
+          ls -la "$BUILD_SDK" || true
+          echo "tools/bin contents:"
+          ls -la "$BUILD_SDK/tools/bin" || true
+          echo "cmdline-tools latest bin contents:"
+          ls -la "$BUILD_SDK/cmdline-tools/latest/bin" || true
 
       - name: Cache Buildozer and Gradle
         uses: actions/cache@v4
