@@ -55,6 +55,23 @@ jobs:
           yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$BUILD_SDK" --licenses || true
           echo "ANDROID_SDK_ROOT=$BUILD_SDK" >> "$GITHUB_ENV"
 
+      - name: Expose sdkmanager to Buildozer SDK path
+        run: |
+          GLOBAL=${GLOBAL_ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
+          BUILD_SDK="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$BUILD_SDK/cmdline-tools"
+          # Prefer existing latest, fall back to common installed dir
+          if [ -d "$GLOBAL/cmdline-tools/latest" ]; then
+            ln -sfn "$GLOBAL/cmdline-tools/latest" "$BUILD_SDK/cmdline-tools/latest"
+          elif [ -d "$GLOBAL/cmdline-tools/16.0" ]; then
+            ln -sfn "$GLOBAL/cmdline-tools/16.0" "$BUILD_SDK/cmdline-tools/latest"
+          fi
+          mkdir -p "$BUILD_SDK/tools/bin"
+          if [ -x "$GLOBAL/cmdline-tools/latest/bin/sdkmanager" ]; then
+            ln -sfn "$GLOBAL/cmdline-tools/latest/bin/sdkmanager" "$BUILD_SDK/tools/bin/sdkmanager"
+          fi
+          echo "Buildozer SDK tree contents:" && ls -la "$BUILD_SDK" || true
+
       - name: Cache Buildozer and Gradle
         uses: actions/cache@v4
         with:
