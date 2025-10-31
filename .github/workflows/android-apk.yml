@@ -103,6 +103,18 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install buildozer==1.5.0 cython virtualenv
 
+      - name: Clean previous Buildozer state (avoid stale ANDROIDAPI)
+        run: |
+          echo "Removing Android/.buildozer and ~/.buildozer to avoid stale cached state"
+          rm -rf Android/.buildozer || true
+          rm -rf $HOME/.buildozer || true
+          echo "List workspace root:"
+          ls -la || true
+          echo "List Android dir:"
+          ls -la Android || true
+          echo "Existing Buildozer dirs:"
+          ls -la $HOME/.buildozer || true
+
       - name: Prepare Android app sources
         run: |
           # Bundle core code into the Android package
