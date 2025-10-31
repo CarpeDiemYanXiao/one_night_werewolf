@@ -35,6 +35,7 @@ jobs:
           yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --install \
             "build-tools;33.0.2" \
             "build-tools;36.1.0" \
+            "platforms;android-31" \
             "platforms;android-33" \
             "platform-tools" \
             "ndk;25.1.8937393"
@@ -49,6 +50,7 @@ jobs:
           yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$BUILD_SDK" --install \
             "build-tools;33.0.2" \
             "build-tools;36.1.0" \
+            "platforms;android-31" \
             "platforms;android-33" \
             "platform-tools" \
             "ndk;25.1.8937393"
@@ -118,6 +120,8 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROIDSDK: ${{ env.ANDROID_SDK_ROOT }}
           ANDROIDNDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.1.8937393
+          ANDROIDAPI: '33'
+          ANDROIDMINAPI: '21'
         run: |
           buildozer -v android debug
 
