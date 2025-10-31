@@ -1547,9 +1547,11 @@ class WerewolfApp:
 
     # --- 夜晚引导：点击包装 ---
     def _on_board_player_click(self, idx, event=None):
-        # 夜晚进行中：交给夜晚处理
+        # 夜晚进行中：不允许在牌桌上翻牌（聚焦模式里另有点击逻辑）
         if getattr(self, 'night_mode', False):
-            self._night_handle_player_click(idx)
+            return
+        # 夜晚未结束：不允许翻牌
+        if not getattr(self, 'night_finished', False):
             return
         # 夜晚已结束且尚未判定结果：点击视为处决翻牌并判断胜负
         if getattr(self, 'night_finished', False) and not getattr(self, 'result_decided', False):
@@ -1564,13 +1566,17 @@ class WerewolfApp:
             # 判定并显示结果
             self._evaluate_and_display_result(idx)
             return
+        # 其它情况（已判定结果后）允许自由翻转
         self._toggle_player_card(idx)
 
     def _on_center_card_click(self, idx, event=None):
+        # 夜晚进行中或未结束：不允许在牌桌上翻/看中央
         if getattr(self, 'night_mode', False):
-            self._night_handle_center_click(idx)
             return
-        self._toggle_center_card(idx)
+        if not getattr(self, 'night_finished', False):
+            return
+        # 夜晚结束后，若有需要可以允许翻看中央；默认仍然不必要，保持不动
+        return
 
     def _toggle_center_card(self, idx):
         if idx < 0 or idx >= len(self.center_widgets):
