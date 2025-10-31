@@ -12,6 +12,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,6 +36,7 @@ jobs:
           SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
           yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --install \
             "build-tools;33.0.2" \
+            "build-tools;36.1.0" \
             "platforms;android-33" \
             "platform-tools" \
             "ndk;25.1.8937393"
