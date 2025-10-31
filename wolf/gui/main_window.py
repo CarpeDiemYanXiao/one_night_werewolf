@@ -1045,7 +1045,10 @@ class WerewolfApp:
         for w in self.cards_frame.winfo_children():
             w.destroy()
 
+<<<<<<< HEAD
         roles_dir = os.path.join("resources", "roles")
+=======
+>>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
         # 垂直排列：为每个玩家创建一个带标题的框，标题为“玩家N”，下方显示该角色图片
         # 选择 resampling 常量，以兼容不同 PIL 版本
         try:
@@ -1058,8 +1061,14 @@ class WerewolfApp:
             pframe.grid(row=i, column=0, padx=6, pady=6, sticky='nsew')
             ttk.Label(pframe, text=f"玩家{i+1}").pack(side=tk.TOP)
             img_label = ttk.Label(pframe)
+<<<<<<< HEAD
             img_path = os.path.join(roles_dir, f"{role}.png")
             if os.path.exists(img_path):
+=======
+            # 兼容 jpg/jpeg/png 多后缀，且支持 PyInstaller 解包路径
+            img_path = self._find_image_file(role)
+            if img_path and os.path.exists(img_path):
+>>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
                 try:
                     img = Image.open(img_path).resize((160, 240), resample)
                     tk_img = ImageTk.PhotoImage(img)
@@ -1076,8 +1085,14 @@ class WerewolfApp:
             cframe.grid(row=base_row + j, column=0, padx=6, pady=6, sticky='nsew')
             ttk.Label(cframe, text=f"中央{j+1}").pack(side=tk.TOP)
             img_label = ttk.Label(cframe)
+<<<<<<< HEAD
             img_path = os.path.join(roles_dir, f"{role}.png")
             if os.path.exists(img_path):
+=======
+            # 兼容 jpg/jpeg/png 多后缀
+            img_path = self._find_image_file(role)
+            if img_path and os.path.exists(img_path):
+>>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
                 try:
                     img = Image.open(img_path).resize((180, 270), resample)
                     tk_img = ImageTk.PhotoImage(img)
@@ -1131,7 +1146,23 @@ class WerewolfApp:
             if os.path.exists(p):
                 bg_path = p
                 break
+<<<<<<< HEAD
         # 2) 若未找到，再在项目 images/ 根目录查找（开发态常见放置位置）
+=======
+        # 2) 若未找到，且为打包态，检查 PyInstaller 解包目录中的 images 根目录
+        if not bg_path:
+            try:
+                bundle_base = getattr(sys, '_MEIPASS', None)
+            except Exception:
+                bundle_base = None
+            if bundle_base:
+                for name in ("background.jpg", "background.png"):
+                    p = os.path.join(bundle_base, 'images', name)
+                    if os.path.exists(p):
+                        bg_path = p
+                        break
+        # 3) 若仍未找到，再在项目 images/ 根目录查找（开发态常见放置位置）
+>>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
         if not bg_path:
             try:
                 images_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images'))
@@ -1215,7 +1246,23 @@ class WerewolfApp:
             if os.path.exists(p):
                 placeholder = p
                 break
+<<<<<<< HEAD
         # 若角色资源目录未命中，再尝试项目 images/ 根目录的 background.*
+=======
+        # 若角色资源目录未命中，优先尝试 PyInstaller 解包目录的 images/ 根目录的 background.*
+        if not placeholder:
+            try:
+                bundle_base = getattr(sys, '_MEIPASS', None)
+            except Exception:
+                bundle_base = None
+            if bundle_base:
+                for fn in ("background.jpg", "background.png"):
+                    p = os.path.join(bundle_base, 'images', fn)
+                    if os.path.exists(p):
+                        placeholder = p
+                        break
+        # 若仍未找到，再尝试项目 images/ 根目录的 background.*
+>>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
         if not placeholder:
             try:
                 images_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images'))

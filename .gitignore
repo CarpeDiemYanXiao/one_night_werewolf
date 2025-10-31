@@ -1,0 +1,34 @@
+# Build artifacts (PyInstaller)
+dist/
+build/
+!build/README.md
+*.spec
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments and packaging
+.venv/
+venv/
+env/
+.conda/
+*.egg-info/
+.eggs/
+
+# Test and coverage outputs
+.pytest_cache/
+.mypy_cache/
+.coverage*
+coverage.xml
+htmlcov/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# OS-specific clutter
+Thumbs.db
+.DS_Store
+desktop.ini
