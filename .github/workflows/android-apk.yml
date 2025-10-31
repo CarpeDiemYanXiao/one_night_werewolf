@@ -12,6 +12,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    env:
+      ANDROIDAPI: '33'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,7 +26,11 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zip unzip openjdk-17-jdk
+          sudo apt-get install -y \
+            zip unzip openjdk-17-jdk \
+            build-essential autoconf automake libtool pkg-config \
+            cmake ninja-build git curl \
+            libssl-dev zlib1g-dev
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
