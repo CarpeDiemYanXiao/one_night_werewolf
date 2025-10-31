@@ -29,6 +29,7 @@ jobs:
           sudo apt-get install -y \
             zip unzip openjdk-17-jdk \
             build-essential autoconf automake libtool pkg-config \
+            libtool-bin libltdl-dev m4 gettext autopoint \
             cmake ninja-build git curl \
             libssl-dev zlib1g-dev
 
@@ -128,6 +129,7 @@ jobs:
           ANDROIDNDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.1.8937393
           ANDROIDAPI: '33'
           ANDROIDMINAPI: '21'
+          ACLOCAL_PATH: '/usr/share/aclocal'
         run: |
           buildozer -v android debug
 
