@@ -7,7 +7,7 @@ source.dir = .
 source.include_exts = py,kv,png,jpg,jpeg,ttf,ttc,otf,txt,md,mp3,wav,ogg
 
 # Kivy 依赖
-requirements = python3,kivy
+requirements = python3==3.9.*,kivy==2.3.0,pyjnius==1.6.1
 
 # 主入口
 fullscreen = 0

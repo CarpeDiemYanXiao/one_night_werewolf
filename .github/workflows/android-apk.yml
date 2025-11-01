@@ -21,7 +21,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.9'
 
       - name: Install system dependencies
         run: |
@@ -135,7 +135,7 @@ jobs:
           path: |
             ~/.buildozer
             ~/.gradle/caches
-          key: ${{ runner.os }}-buildozer-${{ hashFiles('Android/buildozer.spec') }}
+          key: ${{ runner.os }}-buildozer-py39-api33-${{ hashFiles('Android/buildozer.spec') }}
 
       - name: Ensure legacy sdkmanager path exists (compat)
         run: |
@@ -155,6 +155,9 @@ jobs:
         run: |
           echo "Removing project-specific build dir to avoid stale cache"
           rm -rf Android/.buildozer || true
+          # Also clear global buildozer cache to ensure ANDROIDAPI=33 is used (not cached 31)
+          echo "Clearing global buildozer cache to reset ANDROIDAPI"
+          rm -rf $HOME/.buildozer || true
           echo "List workspace root:"
           ls -la || true
           echo "List Android dir:"
