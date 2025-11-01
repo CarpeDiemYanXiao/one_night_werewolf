@@ -1045,10 +1045,6 @@ class WerewolfApp:
         for w in self.cards_frame.winfo_children():
             w.destroy()
 
-<<<<<<< HEAD
-        roles_dir = os.path.join("resources", "roles")
-=======
->>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
         # 垂直排列：为每个玩家创建一个带标题的框，标题为“玩家N”，下方显示该角色图片
         # 选择 resampling 常量，以兼容不同 PIL 版本
         try:
@@ -1061,14 +1057,9 @@ class WerewolfApp:
             pframe.grid(row=i, column=0, padx=6, pady=6, sticky='nsew')
             ttk.Label(pframe, text=f"玩家{i+1}").pack(side=tk.TOP)
             img_label = ttk.Label(pframe)
-<<<<<<< HEAD
-            img_path = os.path.join(roles_dir, f"{role}.png")
-            if os.path.exists(img_path):
-=======
             # 兼容 jpg/jpeg/png 多后缀，且支持 PyInstaller 解包路径
             img_path = self._find_image_file(role)
             if img_path and os.path.exists(img_path):
->>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
                 try:
                     img = Image.open(img_path).resize((160, 240), resample)
                     tk_img = ImageTk.PhotoImage(img)
@@ -1085,14 +1076,9 @@ class WerewolfApp:
             cframe.grid(row=base_row + j, column=0, padx=6, pady=6, sticky='nsew')
             ttk.Label(cframe, text=f"中央{j+1}").pack(side=tk.TOP)
             img_label = ttk.Label(cframe)
-<<<<<<< HEAD
-            img_path = os.path.join(roles_dir, f"{role}.png")
-            if os.path.exists(img_path):
-=======
             # 兼容 jpg/jpeg/png 多后缀
             img_path = self._find_image_file(role)
             if img_path and os.path.exists(img_path):
->>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
                 try:
                     img = Image.open(img_path).resize((180, 270), resample)
                     tk_img = ImageTk.PhotoImage(img)
@@ -1146,9 +1132,6 @@ class WerewolfApp:
             if os.path.exists(p):
                 bg_path = p
                 break
-<<<<<<< HEAD
-        # 2) 若未找到，再在项目 images/ 根目录查找（开发态常见放置位置）
-=======
         # 2) 若未找到，且为打包态，检查 PyInstaller 解包目录中的 images 根目录
         if not bg_path:
             try:
@@ -1162,7 +1145,6 @@ class WerewolfApp:
                         bg_path = p
                         break
         # 3) 若仍未找到，再在项目 images/ 根目录查找（开发态常见放置位置）
->>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
         if not bg_path:
             try:
                 images_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images'))
@@ -1246,9 +1228,6 @@ class WerewolfApp:
             if os.path.exists(p):
                 placeholder = p
                 break
-<<<<<<< HEAD
-        # 若角色资源目录未命中，再尝试项目 images/ 根目录的 background.*
-=======
         # 若角色资源目录未命中，优先尝试 PyInstaller 解包目录的 images/ 根目录的 background.*
         if not placeholder:
             try:
@@ -1262,7 +1241,6 @@ class WerewolfApp:
                         placeholder = p
                         break
         # 若仍未找到，再尝试项目 images/ 根目录的 background.*
->>>>>>> cbb2e37f56c50817ac5081bd94ca51beb953ed44
         if not placeholder:
             try:
                 images_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'images'))
@@ -1909,7 +1887,16 @@ class WerewolfApp:
                     self.night_text.config(text="预言家：本局没有预言家行动。")
                 self._create_continue_button()
                 return
-            text = "预言家：请选择‘查看两张中央’或‘查看一名玩家’，完成操作后将出现‘继续’按钮。"
+            # 记录当前预言家玩家索引，用于后续禁止选择自己
+            try:
+                self.night_action_state['seer_players'] = list(players)
+                # 默认禁止所有预言家本人选择自己的牌（通常只有1名）
+                self.night_action_state['seer_forbidden_indices'] = list(players)
+            except Exception:
+                self.night_action_state['seer_players'] = list(players) if players else []
+                self.night_action_state['seer_forbidden_indices'] = list(players) if players else []
+
+            text = "预言家：请选择‘查看两张中央’或‘查看一名玩家’，完成操作后将出现‘继续’按钮（不可查看自己）。"
             if in_center:
                 text += "（中央牌中也有预言家）"
             self.night_text.config(text=text)
@@ -2254,7 +2241,14 @@ class WerewolfApp:
                 self._play_role_wake(role)
             except Exception:
                 pass
-            self.night_text.config(text=f"化身幽灵（{cn}）：请选择‘查看两张中央’或‘查看一名玩家’，完成操作后将出现‘继续’按钮。")
+            # 化身幽灵复制为预言家时，也不可查看自己（此时的自己是 dg_indices[0]）
+            try:
+                self.night_action_state['seer_players'] = list(dg_indices)
+                self.night_action_state['seer_forbidden_indices'] = list(dg_indices)
+            except Exception:
+                self.night_action_state['seer_players'] = list(dg_indices) if dg_indices else []
+                self.night_action_state['seer_forbidden_indices'] = list(dg_indices) if dg_indices else []
+            self.night_text.config(text=f"化身幽灵（{cn}）：请选择‘查看两张中央’或‘查看一名玩家’，完成操作后将出现‘继续’按钮（不可查看自己）。")
             btn_center = ttk.Button(self.night_buttons_frame, text="查看两张中央", command=self._seer_mode_center)
             btn_center.pack(side=tk.LEFT)
             btn_player = ttk.Button(self.night_buttons_frame, text="查看一名玩家", command=self._seer_mode_player)
@@ -2529,7 +2523,10 @@ class WerewolfApp:
             self.night_action_state['seer_continue_btn'] = None
 
         self.night_action_state['seer_player_done'] = False
-        self._focus_show_players(list(range(len(self.player_roles))), on_click=self._seer_reveal_player)
+        # 禁止选择自己：从可选列表中排除当前预言家玩家索引
+        forbidden = set(self.night_action_state.get('seer_forbidden_indices') or [])
+        selectable = [i for i in range(len(self.player_roles)) if i not in forbidden]
+        self._focus_show_players(selectable, on_click=self._seer_reveal_player)
 
     def _seer_reveal_player(self, i):
         # 仅允许查看一次
