@@ -36,6 +36,23 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Cache Buildozer and Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            ~/.gradle/caches
+          key: ${{ runner.os }}-buildozer-py39-api33-${{ hashFiles('Android/buildozer.spec') }}
+
+      - name: Clean previous Buildozer state (avoid stale ANDROIDAPI)
+        run: |
+          echo "Removing project-specific build dir to avoid stale cache"
+          rm -rf Android/.buildozer || true
+          echo "List workspace root:"
+          ls -la || true
+          echo "List Android dir:"
+          ls -la Android || true
+
       - name: Install required Android packages
         run: |
           SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
@@ -129,14 +146,6 @@ jobs:
             ls -la "$BUILD_SDK/tools/bin" || true
           fi
 
-      - name: Cache Buildozer and Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.buildozer
-            ~/.gradle/caches
-          key: ${{ runner.os }}-buildozer-py39-api33-${{ hashFiles('Android/buildozer.spec') }}
-
       - name: Ensure legacy sdkmanager path exists (compat)
         run: |
           SDK_ROOT=${ANDROID_SDK_ROOT:-$HOME/.buildozer/android/platform/android-sdk}
@@ -150,18 +159,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install buildozer==1.5.0 cython virtualenv
-
-      - name: Clean previous Buildozer state (avoid stale ANDROIDAPI)
-        run: |
-          echo "Removing project-specific build dir to avoid stale cache"
-          rm -rf Android/.buildozer || true
-          # Also clear global buildozer cache to ensure ANDROIDAPI=33 is used (not cached 31)
-          echo "Clearing global buildozer cache to reset ANDROIDAPI"
-          rm -rf $HOME/.buildozer || true
-          echo "List workspace root:"
-          ls -la || true
-          echo "List Android dir:"
-          ls -la Android || true
 
       - name: Prepare Android app sources
         run: |
