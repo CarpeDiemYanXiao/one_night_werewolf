@@ -723,7 +723,6 @@ class OneNightApp(App):
             else:
                 text = '化身幽灵：请选择一名其他玩家，查看并复制其角色，然后点击“确认复制”。'
             self._night_set_text(text)
-            self._play_sound('doppelganger_action.MP3')
             self._dg_mode(players)
         else:
             # Unknown or no-op role
@@ -941,9 +940,12 @@ class OneNightApp(App):
             copied_name = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(role), role)
             label = self._current_role_label('doppelganger', dg_indices) or '化身幽灵'
             self._log_action(f"{label}复制了 玩家{target_idx+1}（{copied_name}）")
-        # 播放化身幽灵闭眼后进入复制角色的行动
+        # 确认复制后播放化身幽灵的行动提示音（action），音频结束后再进入复制角色的行动
         copied = role
-        self._finish_role_and_then(lambda: self._dg_run_copied_role_action(copied, dg_indices))
+        def _after_action():
+            self._dg_run_copied_role_action(copied, dg_indices)
+        if not self._play_sound('doppelganger_action.mp3', on_complete=lambda: _after_action()):
+            _after_action()
 
     def _dg_run_copied_role_action(self, copied_role, dg_indices):
         try:
@@ -958,9 +960,16 @@ class OneNightApp(App):
         action_label = f"化身幽灵（{cn_name}）"
         if players_text:
             action_label = f"{action_label}（{players_text}）"
-        self._action_context = {'role': role, 'players': dg_indices, 'label': action_label, 'display': action_label}
+        # 标记：这是化身幽灵执行复制角色的行动，收尾时应播放化身幽灵的 close
+        self._action_context = {
+            'role': role,
+            'players': dg_indices,
+            'label': action_label,
+            'display': action_label,
+            'dg_close_for_copied': True,
+        }
         self._log_action(f"{action_label}开始行动")
-    # 不播放复制角色的提示音，避免暴露化身幽灵的新身份
+        # 不播放复制角色的提示音，避免暴露化身幽灵的新身份
         # 选择首个化身幽灵玩家索引作为后续行动主体（与桌面版一致的简化）
         idx = dg_indices[0] if dg_indices else None
         if role == 'seer':
@@ -1346,6 +1355,12 @@ class OneNightApp(App):
         ctx = getattr(self, '_action_context', None)
         if ctx:
             role = ctx.get('role') or ctx.get('display')
+            # 如果是化身幽灵执行复制角色的行动，收尾播放化身幽灵的 close
+            if ctx.get('dg_close_for_copied'):
+                played = self._play_role_close('doppelganger', on_complete=lambda: cb() if callable(cb) else None)
+                if not played and callable(cb):
+                    cb()
+                return
         # 特殊处理：爪牙在结束时需先播放 thumb 再播放 close
         try:
             norm = WerewolfDealer.normalize_role(role) if role else None
