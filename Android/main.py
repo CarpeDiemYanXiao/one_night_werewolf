@@ -83,12 +83,30 @@ def find_image(role: str):
 
 
 def find_placeholder():
-    cand = [
-        'background.jpg', 'background.png', 'back.png', 'card_back.png', 'unknown.png'
-    ]
+    """Locate a generic card-back/background image.
+
+    Prefer project-level images/background.jpg, then fall back to common names
+    in role/resource folders.
+    """
+    cand = ['background.jpg', 'background.png', 'back.png', 'card_back.png', 'unknown.png']
+    search_dirs = []
+    # 1) Top-level images/ (project root)
+    search_dirs.append(os.path.join(ROOT, '..', 'images'))
+    # 2) Android assets folder (if any)
+    search_dirs.append(os.path.join(ROOT, 'assets'))
+    # 3) Known role/resource folders
+    search_dirs.extend(ASSET_ROLE_DIRS)
+    # 4) Parent folders of role/resource dirs, in case background is placed next to roles/
     for d in ASSET_ROLE_DIRS:
+        parent = os.path.dirname(d)
+        if parent and parent not in search_dirs:
+            search_dirs.append(parent)
+    # scan
+    for base in search_dirs:
+        if not base or not os.path.isdir(base):
+            continue
         for fn in cand:
-            p = os.path.join(d, fn)
+            p = os.path.join(base, fn)
             if os.path.exists(p):
                 return p
     return None
@@ -464,6 +482,11 @@ class OneNightApp(App):
             board.ids.night_end.disabled = False
         except Exception:
             pass
+        # 进入聚焦模式：隐藏玩家/中央卡池，仅呈现当前角色操作区域
+        try:
+            self._enter_focus_mode()
+        except Exception:
+            pass
         self._stop_voice_playback()
         self._night_start_bgm()
         self.night_steps = self.dealer.get_night_steps() or []
@@ -502,6 +525,11 @@ class OneNightApp(App):
         self._cancel_night_timer()
         self._stop_voice_playback()
         self._advancing_role = False
+        # 退出聚焦模式并恢复牌桌
+        try:
+            self._leave_focus_mode()
+        except Exception:
+            pass
         self._night_set_status('夜晚已结束：可自由翻牌/交换')
         self._night_set_text('')
         self._log_action('夜晚结束')
@@ -602,8 +630,7 @@ class OneNightApp(App):
                 text = f"爪牙：{role_players_text}，本局没有狼人。" if role_players_text else '爪牙：本局没有狼人。'
                 self._log_action(f"{label}确认本局没有狼人")
             self._night_set_text(text)
-            # 若有专用音频，播放提示（仅语音，无文字 观看）
-            self._play_sound('minion_thumb.MP3')
+            # 音频顺序交由 _finish_role_and_then 统一处理（wake -> [thumb] -> close）
             self._set_continue_enabled(True)
         elif role == 'mason':
             if not players:
@@ -833,6 +860,9 @@ class OneNightApp(App):
             front = find_image(role) or self.get_back(True)
             def bind_click(b=btn, idx=j, front_path=front):
                 def handler(_):
+                    # 仅当仍有剩余次数时允许翻开
+                    if remaining['n'] <= 0:
+                        return
                     b.background_normal = front_path
                     on_click(idx)
                 b.bind(on_release=handler)
@@ -842,11 +872,14 @@ class OneNightApp(App):
     def _night_focus_players(self, indices, on_click):
         actions = self.manager.get_screen('board').ids.night_actions
         actions.clear_widgets()
+        # 使用“卡背+编号”的独立操作卡片，避免展示全局牌桌
         for idx in indices:
-            role = self.player_roles[idx]
-            btn = Button(text=f'玩家{idx+1}', size_hint_y=None, height='60dp')
+            box = BoxLayout(orientation='vertical', size_hint_y=None, height='220dp', padding='4dp', spacing='4dp')
+            box.add_widget(Label(text=f'玩家{idx+1}', size_hint_y=None, height='24dp'))
+            btn = Button(size_hint_y=None, height='180dp', background_normal=self.get_back(), background_down=self.get_back(), border=(0,0,0,0))
             btn.bind(on_release=lambda b, i=idx: on_click(i))
-            actions.add_widget(btn)
+            box.add_widget(btn)
+            actions.add_widget(box)
 
     def _night_focus_single_player(self, idx):
         actions = self.manager.get_screen('board').ids.night_actions
@@ -927,8 +960,7 @@ class OneNightApp(App):
             action_label = f"{action_label}（{players_text}）"
         self._action_context = {'role': role, 'players': dg_indices, 'label': action_label, 'display': action_label}
         self._log_action(f"{action_label}开始行动")
-        # 唤醒复制的角色音效
-        self._play_role_wake(role)
+    # 不播放复制角色的提示音，避免暴露化身幽灵的新身份
         # 选择首个化身幽灵玩家索引作为后续行动主体（与桌面版一致的简化）
         idx = dg_indices[0] if dg_indices else None
         if role == 'seer':
@@ -991,48 +1023,155 @@ class OneNightApp(App):
             label = self._current_role_label('seer') or '预言家'
             self._log_action(f"{label}查看玩家{i+1}：{name}")
             self._set_continue_enabled(True)
-        self._night_focus_players(list(range(self.player_count)), on_pick)
+        # 禁止查看自己：从当前执行预言家的玩家索引中过滤
+        ctx = getattr(self, '_action_context', {}) or {}
+        forbidden = set(ctx.get('players') or [])
+        selectable = [idx for idx in range(self.player_count) if idx not in forbidden]
+        self._night_focus_players(selectable, on_pick)
+
+    # ---- Focus mode (hide board grids during role actions) ----
+    def _enter_focus_mode(self):
+        """Hide players/centers grids to present a clean action-focused UI area."""
+        try:
+            board = self.manager.get_screen('board')
+            pg: GridLayout = board.ids.players_grid
+            cg: GridLayout = board.ids.center_grid
+            pg.clear_widgets()
+            cg.clear_widgets()
+        except Exception:
+            pass
+        self._in_focus_mode = True
+
+    def _leave_focus_mode(self):
+        """Restore the board by rebuilding players/centers grids."""
+        try:
+            self.build_board()
+        except Exception:
+            pass
+        self._in_focus_mode = False
 
     def _robber_mode(self, robber_idx):
         if robber_idx is None:
             self._set_continue_enabled(True)
             return
+        # 自定义独立操作界面（单击即定）：
+        # 选择一名其他玩家后，立即执行交换，并仅展示被点玩家的原牌与编号；不再显示选择界面/确认按钮。
+        actions = self.manager.get_screen('board').ids.night_actions
+        actions.clear_widgets()
         others = [i for i in range(self.player_count) if i != robber_idx]
-        def on_pick(tgt):
-            # show target's pre-swap card
-            role_before = self.player_roles[tgt]
-            img = find_image(role_before)
-            actions = self.manager.get_screen('board').ids.night_actions
-            actions.clear_widgets()
-            btn = Button(size_hint_y=None, height='220dp', background_normal=(img or self.get_back()), background_down='')
-            actions.add_widget(btn)
-            name = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(role_before), role_before)
-            actions.add_widget(Label(text=f'玩家{tgt+1}：{name}', size_hint_y=None, height='28dp'))
-            # perform swap
+
+        def _pick_once(i):
+            # 记录被点玩家当前牌用于展示
+            role_before = self.player_roles[i]
+            img = find_image(role_before) or self.get_back()
+            name_before = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(role_before), role_before)
+            # 执行交换
             try:
-                self.dealer.swap_between_players(robber_idx, tgt)
+                self.dealer.swap_between_players(robber_idx, i)
             except Exception:
                 pass
             self._sync_from_session_android()
+            # 日志记录强盗的新牌
             new_role = self.player_roles[robber_idx]
             new_name = ROLE_DISPLAY_NAMES.get(WerewolfDealer.normalize_role(new_role), new_role)
             label = self._current_role_label('robber', [robber_idx]) or f'强盗（玩家{robber_idx+1}）'
-            self._log_action(f"{label}与 玩家{tgt+1} 交换，现在获得 {new_name}")
+            self._log_action(f"{label}与 玩家{i+1} 交换，现在获得 {new_name}")
+            # 清空选择界面，仅展示被点玩家的原牌与编号
+            actions.clear_widgets()
+            btn = Button(size_hint_y=None, height='220dp', background_normal=img, background_down='')
+            actions.add_widget(btn)
+            actions.add_widget(Label(text=f'玩家{i+1}：{name_before}', size_hint_y=None, height='28dp'))
+            # 允许继续
             self._set_continue_enabled(True)
-        self._night_focus_players(others, on_pick)
+
+        # 构建候选玩家卡片（单击即定）
+        for idx in others:
+            box = BoxLayout(orientation='vertical', size_hint_y=None, height='220dp', padding='4dp', spacing='4dp')
+            box.add_widget(Label(text=f'玩家{idx+1}', size_hint_y=None, height='24dp'))
+            btn = Button(size_hint_y=None, height='180dp', background_normal=self.get_back(), background_down=self.get_back(), border=(0,0,0,0))
+            btn.bind(on_release=lambda b, i=idx: _pick_once(i))
+            box.add_widget(btn)
+            actions.add_widget(box)
 
     def _troublemaker_mode(self, tm_idx):
         if tm_idx is None:
             self._set_continue_enabled(True)
             return
-        sel = []
-        def on_pick(i):
-            nonlocal sel
+        # 自定义独立操作界面：选择两名其他玩家，按“确认交换”生效
+        actions = self.manager.get_screen('board').ids.night_actions
+        actions.clear_widgets()
+        others = [i for i in range(self.player_count) if i != tm_idx]
+        # 状态：已选列表和每个tile的高亮
+        self._tm_state = {
+            'sel': [],
+            'tiles': {},
+            'confirm_btn': None,
+            'tm': tm_idx,
+        }
+
+        def _update_confirm():
+            btn = self._tm_state.get('confirm_btn')
+            if not btn:
+                return
+            try:
+                btn.disabled = not (len(self._tm_state['sel']) == 2)
+            except Exception:
+                pass
+
+        def _set_tile_selected(i, selected):
+            info = self._tm_state['tiles'].get(i)
+            if not info:
+                return
+            color_instr = info.get('color')
+            if not color_instr:
+                return
+            try:
+                color_instr.rgba = (0.18, 0.49, 0.25, 1) if selected else (0.13, 0.13, 0.13, 1)
+            except Exception:
+                pass
+
+        def _toggle(i):
+            sel = self._tm_state['sel']
             if i in sel:
                 sel.remove(i)
+                _set_tile_selected(i, False)
             else:
                 sel.append(i)
-            if len(sel) == 2:
+                # 最多保留两个，超出的移除最早的一个
+                if len(sel) > 2:
+                    drop = sel.pop(0)
+                    _set_tile_selected(drop, False)
+                _set_tile_selected(i, True)
+            _update_confirm()
+
+        # 构建候选玩家操作卡片
+        for idx in others:
+            box = BoxLayout(orientation='vertical', size_hint_y=None, height='220dp', padding='4dp', spacing='4dp')
+            # 选中高亮底色
+            with box.canvas.before:
+                color_instr = Color(0.13, 0.13, 0.13, 1)
+                rect = Rectangle(pos=box.pos, size=box.size)
+            def _upd_rect(_inst, _val, rect=rect, box=box):
+                rect.pos = box.pos
+                rect.size = box.size
+            box.bind(pos=_upd_rect, size=_upd_rect)
+            # 标题 + 卡背按钮
+            box.add_widget(Label(text=f'玩家{idx+1}', size_hint_y=None, height='24dp'))
+            btn = Button(size_hint_y=None, height='180dp', background_normal=self.get_back(), background_down=self.get_back(), border=(0,0,0,0))
+            btn.bind(on_release=lambda b, i=idx: _toggle(i))
+            box.add_widget(btn)
+            actions.add_widget(box)
+            self._tm_state['tiles'][idx] = {'box': box, 'color': color_instr}
+
+        # 底部确认按钮
+        box_btns = self._night_buttons_box()
+        if box_btns is not None:
+            confirm = Button(text='确认交换', size_hint_y=None, height='40dp')
+            confirm.disabled = True
+            def _do_confirm(*_):
+                sel = list(self._tm_state.get('sel') or [])
+                if len(sel) != 2:
+                    return
                 a, b = sel[0], sel[1]
                 try:
                     self.dealer.swap_between_players(a, b)
@@ -1041,30 +1180,96 @@ class OneNightApp(App):
                 self._sync_from_session_android()
                 label = self._current_role_label('troublemaker', [tm_idx]) or f'捣蛋鬼（玩家{tm_idx+1}）'
                 self._log_action(f"{label}交换了 玩家{a+1} 与 玩家{b+1}")
+                try:
+                    confirm.disabled = True
+                except Exception:
+                    pass
                 self._set_continue_enabled(True)
-        self._night_focus_players([i for i in range(self.player_count) if i != tm_idx], on_pick)
+            confirm.bind(on_release=_do_confirm)
+            box_btns.add_widget(confirm)
+            self._tm_state['confirm_btn'] = confirm
+            _update_confirm()
 
     def _drunk_mode(self, drunk_idx):
         if drunk_idx is None:
             self._set_continue_enabled(True)
             return
+        # 自定义独立操作界面：选择一张中央牌后按“确认交换”生效（不展示新牌）
         actions = self.manager.get_screen('board').ids.night_actions
         actions.clear_widgets()
+        self._drunk_state = {'sel': None, 'tiles': {}, 'confirm_btn': None, 'drunk': drunk_idx}
+
+        def _update_confirm():
+            btn = self._drunk_state.get('confirm_btn')
+            if not btn:
+                return
+            try:
+                btn.disabled = (self._drunk_state.get('sel') is None)
+            except Exception:
+                pass
+
+        def _set_center_selected(j, selected):
+            info = self._drunk_state['tiles'].get(j)
+            if not info:
+                return
+            color_instr = info.get('color')
+            if not color_instr:
+                return
+            try:
+                color_instr.rgba = (0.18, 0.49, 0.25, 1) if selected else (0.13, 0.13, 0.13, 1)
+            except Exception:
+                pass
+
+        def _pick(j):
+            # 单选：清除原选择，高亮新选择
+            prev = self._drunk_state.get('sel')
+            if prev is not None and prev != j:
+                _set_center_selected(prev, False)
+            self._drunk_state['sel'] = j
+            _set_center_selected(j, True)
+            _update_confirm()
+
         for j, role in enumerate(self.center_roles):
-            btn = Button(size_hint_y=None, height='180dp', background_normal=self.get_back(True), background_down='')
-            def bind_click(idx=j):
-                def handler(_):
-                    try:
-                        self.dealer.swap_with_center(drunk_idx, idx)
-                    except Exception:
-                        pass
-                    self._sync_from_session_android()
-                    label = self._current_role_label('drunk', [drunk_idx]) or f'酒鬼（玩家{drunk_idx+1}）'
-                    self._log_action(f"{label}与 中央{idx+1} 交换")
-                    self._set_continue_enabled(True)
-                return handler
-            btn.bind(on_release=bind_click())
-            actions.add_widget(btn)
+            box = BoxLayout(orientation='vertical', size_hint_y=None, height='220dp', padding='4dp', spacing='4dp')
+            with box.canvas.before:
+                color_instr = Color(0.13, 0.13, 0.13, 1)
+                rect = Rectangle(pos=box.pos, size=box.size)
+            def _upd_rect(_inst, _val, rect=rect, box=box):
+                rect.pos = box.pos
+                rect.size = box.size
+            box.bind(pos=_upd_rect, size=_upd_rect)
+            box.add_widget(Label(text=f'中央{j+1}', size_hint_y=None, height='24dp'))
+            btn = Button(size_hint_y=None, height='180dp', background_normal=self.get_back(True), background_down=self.get_back(True), border=(0,0,0,0))
+            btn.bind(on_release=lambda b, k=j: _pick(k))
+            box.add_widget(btn)
+            actions.add_widget(box)
+            self._drunk_state['tiles'][j] = {'box': box, 'color': color_instr}
+
+        # 底部确认按钮
+        box_btns = self._night_buttons_box()
+        if box_btns is not None:
+            confirm = Button(text='确认交换', size_hint_y=None, height='40dp')
+            confirm.disabled = True
+            def _do_confirm(*_):
+                j = self._drunk_state.get('sel')
+                if j is None:
+                    return
+                try:
+                    self.dealer.swap_with_center(drunk_idx, j)
+                except Exception:
+                    pass
+                self._sync_from_session_android()
+                label = self._current_role_label('drunk', [drunk_idx]) or f'酒鬼（玩家{drunk_idx+1}）'
+                self._log_action(f"{label}与 中央{j+1} 交换")
+                try:
+                    confirm.disabled = True
+                except Exception:
+                    pass
+                self._set_continue_enabled(True)
+            confirm.bind(on_release=_do_confirm)
+            box_btns.add_widget(confirm)
+            self._drunk_state['confirm_btn'] = confirm
+            _update_confirm()
 
     # ---- Session sync and refresh ----
     def _sync_from_session_android(self):
@@ -1141,6 +1346,27 @@ class OneNightApp(App):
         ctx = getattr(self, '_action_context', None)
         if ctx:
             role = ctx.get('role') or ctx.get('display')
+        # 特殊处理：爪牙在结束时需先播放 thumb 再播放 close
+        try:
+            norm = WerewolfDealer.normalize_role(role) if role else None
+        except Exception:
+            norm = role
+        if norm == 'minion':
+            def _after_thumb():
+                # 稍作停顿后播放 close，若未能播放则直接进入下一步
+                def _play_close(*_):
+                    played_close = self._play_role_close('minion', on_complete=lambda: cb() if callable(cb) else None)
+                    if not played_close and callable(cb):
+                        cb()
+                try:
+                    Clock.schedule_once(_play_close, 0.2)
+                except Exception:
+                    _play_close()
+            # 先尝试播放 thumb，失败则直接播放 close
+            if not self._play_sound('minion_thumb.mp3', on_complete=lambda: _after_thumb()):
+                _after_thumb()
+            return
+        # 默认行为：仅播放 close
         played = self._play_role_close(role, on_complete=lambda: cb() if callable(cb) else None)
         if not played and callable(cb):
             cb()
@@ -1339,15 +1565,82 @@ class OneNightApp(App):
         popup.open()
 
     def redeal_same_pool(self):
-        if not self.current_role_pool:
-            self.popup('提示', '当前没有已选择的牌池')
-            return
+        """Return to role selection instead of immediately dealing.
+
+        - Prefill the selection screen with the last used role pool (if any):
+          * player_count = len(pool) - 3
+          * werewolf_count = count('werewolf')
+          * selected roles = non-werewolf roles (mason treated as a single toggle)
+        - Do NOT start dealing here; wait for the user to press the Start button.
+        """
+        # Go to selection screen
         try:
-            res = self.dealer.start_game_with_selection(self.current_role_pool[:])
-        except Exception as e:
-            self.popup('发牌失败', str(e))
+            sc = self.manager.get_screen('role_select')
+        except Exception:
+            # Fallback: just switch by name; screen should exist from KV
+            self.manager.current = 'role_select'
             return
-        self._after_dealt(res['player_cards'], res['center_cards'])
+
+        pool = list(self.current_role_pool or [])
+        # Clear previous UI selection state
+        self.selected_set.clear()
+        for role, _tile in getattr(self, 'role_tiles', {}).items():
+            self._set_tile_selected(role, False)
+
+        if pool:
+            # Compute and fill counts
+            wolf_cnt = sum(1 for r in pool if r == 'werewolf')
+            player_cnt = max(1, len(pool) - 3)
+            try:
+                sc.ids.player_count.text = str(player_cnt)
+            except Exception:
+                pass
+            try:
+                sc.ids.werewolf_count.text = str(wolf_cnt)
+            except Exception:
+                pass
+
+            # Prefill role tiles (exclude werewolves; mason is single toggle)
+            picked = set()
+            for r in pool:
+                if r == 'werewolf':
+                    continue
+                if r == 'mason':
+                    picked.add('mason')
+                else:
+                    picked.add(r)
+            for r in picked:
+                if r in getattr(self, 'role_tiles', {}):
+                    self.selected_set.add(r)
+                    self._set_tile_selected(r, True)
+            # Refresh summary label
+            try:
+                self.update_summary()
+            except Exception:
+                pass
+        else:
+            # No known pool; keep existing inputs and just ensure summary is updated
+            try:
+                self.update_summary()
+            except Exception:
+                pass
+
+        # Reset transient game state (no active game after returning to selection)
+        self.player_roles = []
+        self.center_roles = []
+        self.player_count = 0
+        self.view_index = 0
+        self.viewed = []
+        self.night_mode = False
+        self.night_finished = False
+        self.result_decided = False
+        try:
+            self._cancel_night_timer()
+        except Exception:
+            pass
+
+        # Finally, show the selection screen
+        self.manager.current = 'role_select'
 
     def get_back(self, center=False):
         global CARD_BACK, CENTER_BACK

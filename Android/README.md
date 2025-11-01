@@ -3,6 +3,7 @@
 本目录提供一个使用 Kivy 实现的 Android 端应用，直接复用项目 `wolf/core/werewolf_dealer.py` 的核心发牌与会话逻辑。
 
 功能对齐（简化版）：
+
 - 角色选择：
   - 多选角色（不含“狼人”），并可单独设置“狼人”数量；
   - 选择“守夜人（mason）”自动计为两张；
@@ -13,8 +14,8 @@
   - 查看完进入桌面。
 - 桌面交互：
   - 玩家牌与中央 3 张：点一次翻面、再点回背面；
-  - “交换两名玩家角色”按钮，输入两位编号后互换；
-  - “重新发牌”按钮：使用相同的角色池重新洗牌开新局并回到查看流程。
+  - 捣蛋鬼回合：夜晚引导中点击两名玩家并按“确认交换”完成交换；
+  - “重新选牌”按钮：返回“角色选择”界面，按上局同一牌池预填（玩家数、狼人数量与非狼人角色）；需再次点击“开始局”后才会发牌。
 
 注意：这是一个基础实现，UI 布局与图片尺寸做了手机端友好调整；如果你有自定义美术资源，可替换 `assets/roles` 下图片。
 
@@ -34,20 +35,25 @@ py Android\main.py
 Kivy 官方推荐使用 Buildozer（Linux 环境更简单）：
 
 1. 安装 Buildozer 和依赖（参考 Kivy 文档）：
-   https://kivy.org/doc/stable/guide/packaging-android.html
+   <https://kivy.org/doc/stable/guide/packaging-android.html>
 2. 在本目录初始化 buildozer：
+
    ```bash
    buildozer init
    ```
+
 3. 编辑 `buildozer.spec`：
    - requirements 加入 `kivy`；
    - source.include_exts 加入 `py,png,jpg,jpeg,kv`；
    - (可选) 把 `Android/assets/roles` 目录打包进 APK。
 4. 构建：
+
    ```bash
    buildozer -v android debug
    ```
+
 5. 连接设备或模拟器后：
+
    ```bash
    buildozer android deploy run
    ```
