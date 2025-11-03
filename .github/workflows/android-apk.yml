@@ -204,7 +204,7 @@ jobs:
           ANDROIDMINAPI: '21'
           ACLOCAL_PATH: '/usr/share/aclocal'
         run: |
-          buildozer -v android debug
+          ANDROIDAPI=33 buildozer -v android debug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
